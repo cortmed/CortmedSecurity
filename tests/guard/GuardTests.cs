@@ -487,13 +487,40 @@ public static class GuardTests
         Assert(e.EventId == 10 && e.Pid == 11 && e.TargetPid == 22 && e.Image == @"C:\a.exe" && e.TargetImage.EndsWith("lsass.exe"), "olay 10");
     }
 
-    [Test] static void SysmonReaderReportsNotRunningWithoutThrowing()
+    [Test] static void SysmonReaderStartOnMissingLogReportsErrorWithoutThrowing()
     {
-        using (var r = new SysmonReader(ev => { }))
+        var errors = new List<string>();
+        using (var r = new SysmonReader(ev => { }, errors.Add))
         {
-            Assert(!r.IsSysmonRunning(), "Sysmon bu makinede calismamali");
-            r.Start();
+            bool running = r.IsSysmonRunning();
+            bool started = r.Start();
+            if (!running)
+            {
+                Assert(!started && !r.IsWatching, "gunluk yokken Start false donmeli");
+                Assert(errors.Count == 1, "onError cagrilmali");
+            }
         }
+    }
+
+    [Test] static void HandleXmlReportsMalformedXmlAndThrowingCallback()
+    {
+        var events = new List<GuardEvent>();
+        var errors = new List<string>();
+        var r = new SysmonReader(events.Add, errors.Add);
+        r.HandleXml("<Event><bozuk");
+        Assert(errors.Count == 1 && events.Count == 0, "bozuk xml: bir hata, olay yok");
+
+        var ok = File.ReadAllText(RepoPath("tests/guard/fixtures/sysmon-event-1.xml"), Encoding.UTF8);
+        r.HandleXml(ok);
+        Assert(events.Count == 1 && errors.Count == 1 && events[0].Pid == 4321, "gecerli xml olay uretmeli");
+
+        var errors2 = new List<string>();
+        var r2 = new SysmonReader(ev => { throw new InvalidOperationException("patladi"); }, errors2.Add);
+        r2.HandleXml(ok);
+        Assert(errors2.Count == 1 && errors2[0].Contains("patladi"), "onEvent hatasi bildirilmeli");
+
+        var r3 = new SysmonReader(ev => { throw new InvalidOperationException("x"); }, s => { throw new Exception("y"); });
+        r3.HandleXml(ok);
     }
 
     // ---- calistirici ----

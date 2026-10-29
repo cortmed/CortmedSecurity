@@ -16,11 +16,39 @@ namespace Cortmed.Guard
         static readonly XNamespace Ns = "http://schemas.microsoft.com/win/2004/08/events/event";
 
         readonly Action<GuardEvent> _onEvent;
+        readonly Action<string> _onError;
         EventLogWatcher _watcher;
 
-        public SysmonReader(Action<GuardEvent> onEvent)
+        public SysmonReader(Action<GuardEvent> onEvent) : this(onEvent, null) { }
+
+        // Geri cagrilar (onEvent/onError) threadpool thread'inde calisir; tuketici thread-safe olmali.
+        public SysmonReader(Action<GuardEvent> onEvent, Action<string> onError)
         {
             _onEvent = onEvent;
+            _onError = onError ?? (s => { });
+        }
+
+        public bool IsWatching { get { return _watcher != null; } }
+
+        void ReportError(string msg)
+        {
+            try { _onError(msg); } catch { }
+        }
+
+        internal void HandleXml(string xml)
+        {
+            GuardEvent ev;
+            try { ev = FromXml(xml); }
+            catch (Exception ex)
+            {
+                ReportError("Sysmon olay okunamadı: " + ex.Message);
+                return;
+            }
+            try { _onEvent(ev); }
+            catch (Exception ex)
+            {
+                ReportError("Sysmon olay işlenemedi: " + ex.Message);
+            }
         }
 
         public static GuardEvent FromXml(string eventXml)
@@ -102,21 +130,25 @@ namespace Cortmed.Guard
             return false;
         }
 
-        public void Start()
+        public bool Start()
         {
-            if (_watcher != null) return;
+            if (_watcher != null) return true;
+            EventLogWatcher w = null;
             try
             {
                 var q = new EventLogQuery(LogName, PathType.LogName, Query);
-                var w = new EventLogWatcher(q);
+                w = new EventLogWatcher(q);
                 w.EventRecordWritten += OnRecord;
                 w.Enabled = true;
                 _watcher = w;
+                return true;
             }
-            catch
+            catch (Exception ex)
             {
-                // Gunluk yok / erisim yok: sessizce vazgec.
+                if (w != null) { try { w.Dispose(); } catch { } }
                 _watcher = null;
+                ReportError("Sysmon günlüğü izlenemedi: " + ex.Message);
+                return false;
             }
         }
 
@@ -124,14 +156,20 @@ namespace Cortmed.Guard
         {
             try
             {
-                if (e.EventRecord == null) return;
-                using (e.EventRecord)
+                if (e.EventException != null)
                 {
-                    var ev = FromXml(e.EventRecord.ToXml());
-                    _onEvent(ev);
+                    ReportError("Sysmon olay okunamadı: " + e.EventException.Message);
+                    return;
                 }
+                if (e.EventRecord == null) return;
+                string xml;
+                using (e.EventRecord) { xml = e.EventRecord.ToXml(); }
+                HandleXml(xml);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                ReportError("Sysmon olay okunamadı: " + ex.Message);
+            }
         }
 
         public void Dispose()
