@@ -381,6 +381,7 @@ try {
     Check 'CortmedGuard.exe kurulum komutuyla derlenir' (($LASTEXITCODE -eq 0) -and (Test-Path $gexe)) $gout
 } finally { Remove-Item $gtmp -Recurse -Force -ErrorAction SilentlyContinue }
 
+$hostTplPath = Join-Path $root 'windows\browser\com.cortmed.security.json.template'
 # Kullanici betikleri yetkili parcaya baglanir
 $inst = Get-Content (Join-Path $root 'windows\Install.ps1') -Raw -Encoding UTF8
 $unin = Get-Content (Join-Path $root 'windows\Uninstall.ps1') -Raw -Encoding UTF8
@@ -398,6 +399,39 @@ foreach ($w in 'sysmon-cortmed.xml', 'behavior_rules.json', 'Uninstall-Guard.ps1
     Check "Install.ps1 kopyalar: $w" ($inst.Contains($w)) ''
 }
 Check 'Install.ps1 Install-Guard.ps1''i kullanici klasorune kopyalar' ($inst.Contains('foreach ($f in ''Install-Guard.ps1''')) ''
+
+# --- Tarayici eklentisi: kurulum, kaldirma, paket (betikler ASLA calistirilmaz; yalnizca metin ve bildirim olusturucu) ---
+foreach ($w in 'NativeMessagingHosts', 'com.cortmed.security', 'extension-id.txt', 'CortmedBrowserHost', 'NativeHostManifest.ps1', 'Google\Chrome', 'Microsoft\Edge') {
+    Check "Install.ps1 eklenti: $w" ($inst.Contains($w)) ''
+}
+foreach ($w in 'Google\Chrome\NativeMessagingHosts\com.cortmed.security', 'Microsoft\Edge\NativeMessagingHosts\com.cortmed.security') {
+    Check "Uninstall.ps1 siler: $w" ($unin.Contains($w)) ''
+}
+foreach ($w in 'browser', 'extension-id.txt', 'CortmedBrowserHost.cs', 'com.cortmed.security.json.template', 'NativeHostManifest.ps1') {
+    Check "paket betigi eklenti dosyasi: $w" ($pkg.Contains($w)) ''
+}
+foreach ($leaf in 'Install.ps1', 'Uninstall.ps1', 'CortmedSecurity.ps1') {
+    $lp = Join-Path $root "windows\$leaf"
+    Check "$leaf UTF-8 BOM" ((@([IO.File]::ReadAllBytes($lp) | Select-Object -First 3) -join ',') -eq '239,187,191') ''
+}
+$nhm = Join-Path $root 'windows\browser\NativeHostManifest.ps1'
+$nhmOk = $false; $nhmWhy = 'NativeHostManifest.ps1 yok'
+if (Test-Path $nhm) {
+    try {
+        . $nhm
+        $id = (Get-Content (Join-Path $root 'browser\extension-id.txt') -Raw).Trim()
+        $hp = 'C:\Users\Ay' + [char]0xFC + 'e Test\AppData\Local\CortmedSecurity\CortmedBrowserHost.exe'
+        $j = New-NativeHostManifestJson -HostPath $hp -ExtensionId $id -TemplatePath $hostTplPath
+        $o = $j | ConvertFrom-Json
+        $nhmOk = ($o.path -ceq $hp) -and (@($o.allowed_origins).Count -eq 1) -and ($o.allowed_origins[0] -ceq "chrome-extension://$id/") -and
+            ($o.name -eq 'com.cortmed.security') -and ($o.type -eq 'stdio') -and ($j -notmatch '__')
+        $nhmWhy = $j
+        $badId = $false
+        try { [void](New-NativeHostManifestJson -HostPath $hp -ExtensionId 'x"y' -TemplatePath $hostTplPath) } catch { $badId = $true }
+        Check 'bildirim olusturucu: gecersiz eklenti kimligini reddeder' $badId ''
+    } catch { $nhmWhy = $_.Exception.Message }
+}
+Check 'bildirim olusturucu: bosluk ve u-umlaut yolu JSON''a gidip gelir, izinli kaynak dogru' $nhmOk $nhmWhy
 
 # --- Tepsi: soru penceresi, bulgular, bekci durumu (ayri powershell, pencere gosterilmez) ---
 $secPath = Join-Path $root 'windows\CortmedSecurity.ps1'

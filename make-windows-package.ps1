@@ -31,6 +31,13 @@ foreach ($d in 'guard\Core', 'guard\Service') {
     Copy-Item (Join-Path $root "windows\$d\*.cs") (Join-Path $stage $d)
 }
 Copy-Item (Join-Path $root 'windows\guard\sysmon-cortmed.xml') (Join-Path $stage 'guard')
+# Tarayici korumasi: eklenti agaci + kimligi, kopru kaynagi, bildirim sablonu ve olusturucusu (Install.ps1 stage\browser'dan okur)
+New-Item -ItemType Directory -Force (Join-Path $stage 'browser\extension') | Out-Null
+Copy-Item (Join-Path $root 'browser\extension\*') (Join-Path $stage 'browser\extension') -Recurse
+Copy-Item (Join-Path $root 'browser\extension-id.txt') (Join-Path $stage 'browser')
+foreach ($f in 'CortmedBrowserHost.cs', 'com.cortmed.security.json.template', 'NativeHostManifest.ps1') {
+    Copy-Item (Join-Path $root "windows\browser\$f") (Join-Path $stage 'browser')
+}
 Copy-Item (Join-Path $root 'engine\rules\behavior_rules.json') $stage
 Copy-Item (Join-Path $root 'engine\dist\windows.cmdb') $stage
 Copy-Item $yarc $stage

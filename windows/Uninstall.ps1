@@ -42,6 +42,11 @@ foreach ($lnk in @(
     Remove-Item $lnk -Force -ErrorAction SilentlyContinue
 }
 
+# Tarayıcı köprüsü kaydı (HKCU): yoksa sessizce geçilir. Köprü dosyaları klasörle birlikte silinir.
+foreach ($regPath in 'Software\Google\Chrome\NativeMessagingHosts\com.cortmed.security', 'Software\Microsoft\Edge\NativeMessagingHosts\com.cortmed.security') {
+    try { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($regPath, $false) } catch { }
+}
+
 $q = Join-Path $dest 'Karantina'
 $keepQuarantine = $false
 if ((Test-Path $q) -and (Get-ChildItem $q)) {

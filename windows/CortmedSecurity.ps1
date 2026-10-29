@@ -1111,6 +1111,23 @@ function Get-GuardCheck($gs) {
     return @{ ok = $true; text = 'Davranış bekçisi açık' }
 }
 
+# Panel durum kartindaki besinci kontrol: tarayici eklentisi son 7 gunde koprudan haber verdiyse acik.
+# Kopru her konustugunda data\browser-lastseen.txt dosyasina ISO UTC zaman yazar. Dosya yok, bozuk ya da eskiyse offer = oneri karti.
+function Get-BrowserCheck([string]$dir = $DataDir, [datetime]$nowUtc = ([datetime]::UtcNow)) {
+    $p = Join-Path $dir 'browser-lastseen.txt'
+    try {
+        if (Test-Path -LiteralPath $p -PathType Leaf) {
+            $raw = ([IO.File]::ReadAllText($p)).Trim()
+            $t = [datetime]::MinValue
+            if ([datetime]::TryParse($raw, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal,AssumeUniversal', [ref]$t)) {
+                $age = $nowUtc - $t
+                if ($age.TotalDays -le 7 -and $age.TotalDays -ge -1) { return @{ ok = $true; text = 'Tarayıcı koruması açık' } }
+            }
+        }
+    } catch { }
+    return @{ ok = $false; text = 'Tarayıcı koruması kapalı'; offer = $true }
+}
+
 # 64 bit Program Files, ortam degiskeni olmadan (Uninstall.ps1 ile ayni yontem): 64 bit islemde [Environment],
 # 32 bit islemde kayit defterindeki ProgramW6432Dir.
 function Get-ProgramFilesDir {
@@ -2798,13 +2815,19 @@ $GuardAdvice = @{ id = 'guard'; icon = '🔒'; title = 'Davranış bekçisini a�
     text = 'Şüpheli davranan programları (örneğin dosyalarınızı şifrelemeye çalışanları) çalışırken durdurur ve size sorar. Windows bir kez izin ister.'
     button = 'Bekçiyi aç' }
 
-function Get-AdviceGroups($advice, [bool]$guardMissing = $false, [string]$guardHint = '') {
+# Tarayici eklentisi bekcinin haber vermedigi surece sunulan oneri (kalkani sarartmaz: tehdit degil, oneridir)
+$BrowserAdvice = @{ id = 'browser'; icon = '🌐'; title = 'Tarayıcı korumasını ekleyin'
+    text = 'Şifre tekrarı, sızmış şifre ve indirme kontrolü için tarayıcınıza Cortmed eklentisini ekleyin.'
+    button = 'Nasıl eklenir?' }
+
+function Get-AdviceGroups($advice, [bool]$guardMissing = $false, [string]$guardHint = '', [bool]$browserMissing = $false) {
     $groups = @()
     if ($guardMissing) {
         $cat = $GuardAdvice.Clone()
         if ($guardHint) { $cat.text = $guardHint }
         $groups += [pscustomobject]@{ cat = $cat; items = @() }
     }
+    if ($browserMissing) { $groups += [pscustomobject]@{ cat = $BrowserAdvice.Clone(); items = @() } }
     $used = @{}
     foreach ($c in $AdviceCategories) {
         $items = @($advice | Where-Object { ($_.key -split ':')[0] -in $c.prefixes -and
@@ -2817,6 +2840,112 @@ function Get-AdviceGroups($advice, [bool]$guardMissing = $false, [string]$guardH
         $groups += [pscustomobject]@{ cat = @{ id = 'other'; icon = '•'; title = 'Diğer öneriler'; text = '{0} öneri daha var.'; button = 'Listeyi göster' }; items = $rest }
     }
     return $groups
+}
+
+# Tarayicinin standart kurulum yolu; PATH'e hic bakilmaz. Yoksa $null.
+function Get-BrowserExePath([string]$browser) {
+    $pf = [Environment]::GetFolderPath('ProgramFiles')
+    $pf86 = [Environment]::GetFolderPath('ProgramFilesX86')
+    $local = [Environment]::GetFolderPath('LocalApplicationData')
+    $rel = if ($browser -eq 'Edge') { 'Microsoft\Edge\Application\msedge.exe' } else { 'Google\Chrome\Application\chrome.exe' }
+    foreach ($base in @($pf, $pf86, $local)) {
+        if (-not $base) { continue }
+        if ($browser -eq 'Edge' -and $base -eq $local) { continue }
+        $p = Join-Path $base $rel
+        if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    }
+    return $null
+}
+
+# Rehberdeki dugme tiklamalari: yalnizca kendi argumanlarini kullanir (olay isleyicileri yerel degiskenlere guvenmez)
+function Copy-GuideText($button) {
+    try { [Windows.Forms.Clipboard]::SetText([string]$button.Tag) } catch { }
+    $button.Text = if ($button.Text -like 'Klasör*') { 'Klasör yolu kopyalandı' } else { 'Kopyalandı' }
+}
+
+function Open-GuideBrowser($form) {
+    $b = $form.Tag.browser
+    $exe = Get-BrowserExePath $b
+    if (-not $exe) {
+        [Windows.Forms.MessageBox]::Show("$b bu bilgisayarda bulunamadı. Tarayıcıyı kendiniz açıp adımlara devam edebilirsiniz.", 'Cortmed Security') | Out-Null
+        return
+    }
+    # chrome:// adresleri komut satirindan acilmaz; tarayici normal acilir, adresi kullanici yapistirir
+    try { Start-Process -FilePath $exe } catch { }
+}
+
+# Secilen tarayiciya gore 4 adimi yeniden cizer
+function Set-BrowserGuideBrowser($f, [string]$b) {
+    $f.Tag.browser = $b
+    foreach ($pair in @(@($f.Tag.btnChrome, 'Chrome'), @($f.Tag.btnEdge, 'Edge'))) {
+        $on = ($pair[1] -eq $b)
+        $pair[0].BackColor = if ($on) { $UiAccent } else { $UiSurface2 }
+        $pair[0].ForeColor = if ($on) { [Drawing.Color]::FromArgb(6, 20, 40) } else { $UiText }
+    }
+    $steps = $f.Tag.steps
+    foreach ($old in @($steps.Controls)) { $steps.Controls.Remove($old); $old.Dispose() }
+    $edge = ($b -eq 'Edge')
+    $addr = if ($edge) { 'edge://extensions' } else { 'chrome://extensions' }
+    $s2 = if ($edge) { 'Sol alttaki Geliştirici modu düğmesini açın.' } else { 'Sağ üstteki Geliştirici modu düğmesini açın.' }
+    $s3 = if ($edge) { 'Paketten çıkarılmışı yükle düğmesine basın.' } else { 'Paketlenmemiş öğe yükle düğmesine basın.' }
+    $rows = @(@('1', 0), @('2', 86), @('3', 138), @('4', 190))
+    foreach ($r in $rows) {
+        $l = New-Object Windows.Forms.Label
+        $l.AutoSize = $false; $l.Size = New-Object Drawing.Size(30, 30); $l.Location = New-Object Drawing.Point(0, ($r[1] - 2))
+        $l.Text = $r[0]; $l.TextAlign = 'MiddleCenter'; $l.Font = New-Font 11 'Bold'
+        $l.BackColor = $UiSurface2; $l.ForeColor = $UiAccent
+        $steps.Controls.Add($l)
+    }
+    $f1 = New-Font 10.5
+    $steps.Controls.Add((New-Label 'Tarayıcınızda şu adresi açın:' 44 0 $UiText $f1 540))
+    $steps.Controls.Add((New-Label $addr 44 30 $UiAccent (New-Object Drawing.Font('Consolas', 11))))
+    $b1 = New-FlatButton 'Kopyala'; $b1.Height = 34; $b1.Location = New-Object Drawing.Point(250, 24); $b1.Tag = $addr
+    $b1.Add_Click({ param($s, $e) Copy-GuideText $s }); $steps.Controls.Add($b1)
+    $steps.Controls.Add((New-Label $s2 44 86 $UiText $f1 540))
+    $steps.Controls.Add((New-Label $s3 44 138 $UiText $f1 540))
+    $steps.Controls.Add((New-Label 'Şu klasörü seçin:' 44 190 $UiText $f1 540))
+    $pl = New-Label $f.Tag.folder 44 220 $UiAccent (New-Object Drawing.Font('Consolas', 10)) 540
+    $steps.Controls.Add($pl)
+    $ph = $pl.GetPreferredSize((New-Object Drawing.Size(0, 0))).Height
+    $b4 = New-FlatButton 'Klasör yolunu kopyala'; $b4.Height = 34; $b4.Location = New-Object Drawing.Point(44, (220 + $ph + 8)); $b4.Tag = $f.Tag.folder
+    $b4.Add_Click({ param($s, $e) Copy-GuideText $s }); $steps.Controls.Add($b4)
+}
+
+# "Tarayici korumasini ekleyin" rehberi: Chrome / Edge icin 4 adim. Pencere kurulur ama gosterilmez
+# (Show-BrowserGuide gosterir); Set-BrowserGuideBrowser $form 'Edge' ile tarayici degistirilir.
+function New-BrowserGuideForm([string]$browser = 'Chrome') {
+    $f = New-DarkForm 'Tarayıcı korumasını ekleyin' 660 640
+    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+    $f.ClientSize = New-Object Drawing.Size(640, 616)
+
+    $f.Controls.Add((New-Label 'Tarayıcı korumasını ekleyin' 24 18 $UiText (New-Font 16 'Bold')))
+    $f.Controls.Add((New-Label 'Eklentiyi bir kez eklemeniz yeterli. Tarayıcınızı seçin ve 4 adımı izleyin.' 24 54 $UiMuted (New-Font 10) 590))
+    $btnChrome = New-FlatButton 'Chrome'; $btnChrome.Location = New-Object Drawing.Point(24, 88)
+    $btnEdge = New-FlatButton 'Edge'; $btnEdge.Location = New-Object Drawing.Point(130, 88)
+    $f.Controls.AddRange(@($btnChrome, $btnEdge))
+    $steps = New-Object Windows.Forms.Panel
+    $steps.Location = New-Object Drawing.Point(24, 144); $steps.Size = New-Object Drawing.Size(592, 330); $steps.BackColor = $UiBg
+    $f.Controls.Add($steps)
+    $f.Controls.Add((New-Label 'Tarayıcı açılınca kopyaladığınız adresi adres çubuğuna yapıştırın.' 24 486 $UiMuted (New-Font 9.5) 590))
+    $f.Controls.Add((New-Label 'Eklenti şifrelerinizi bilgisayarınızdan dışarı göndermez.' 24 514 $UiLevel.OK (New-Font 10 'Bold') 590))
+    $btnOpen = New-FlatButton 'Tarayıcıyı aç' $true; $btnOpen.Location = New-Object Drawing.Point(24, 548)
+    $btnClose = New-FlatButton 'Kapat' $false 'muted'; $btnClose.Location = New-Object Drawing.Point(190, 548)
+    $f.Controls.AddRange(@($btnOpen, $btnClose))
+
+    $f.Tag = @{ browser = $browser; folder = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'CortmedSecurity\browser')
+        btnChrome = $btnChrome; btnEdge = $btnEdge; steps = $steps }
+    $btnChrome.Add_Click({ param($s, $e) Set-BrowserGuideBrowser $s.FindForm() 'Chrome' })
+    $btnEdge.Add_Click({ param($s, $e) Set-BrowserGuideBrowser $s.FindForm() 'Edge' })
+    $btnOpen.Add_Click({ param($s, $e) Open-GuideBrowser $s.FindForm() })
+    $btnClose.Add_Click({ param($s, $e) $s.FindForm().Close() })
+    Set-BrowserGuideBrowser $f $browser
+    return $f
+}
+
+function Show-BrowserGuide($owner = $null) {
+    $f = New-BrowserGuideForm
+    if ($owner) { [void]$f.ShowDialog($owner) } else { [void]$f.ShowDialog() }
+    $f.Dispose()
 }
 
 function Show-Panel {
@@ -2939,7 +3068,8 @@ function Show-Panel {
         if (-not $state.tab) { $state.tab = if ($threats) { 'threat' } else { 'advice' } }
         $guardState = Get-GuardStatus
         $guardCheck = Get-GuardCheck $guardState
-        $groups = @(Get-AdviceGroups $advice ([bool]$guardCheck.offer) ([string]$guardCheck.hint))
+        $browserCheck = Get-BrowserCheck
+        $groups = @(Get-AdviceGroups $advice ([bool]$guardCheck.offer) ([string]$guardCheck.hint) ([bool]$browserCheck.offer))
 
         # Durum alani: kalkanin rengi ve basligi mevcut ozetten gelir (tehlike / bakilacak sey / korunuyor)
         $running = Test-WatcherRunning
@@ -2963,6 +3093,7 @@ function Show-Panel {
             @{ ok = $true; text = "Virüs veritabanı: $sigs" }
             @{ ok = [bool](Get-YaraPaths); text = "Tarama: $engines" }
             $guardCheck
+            $browserCheck
         )
         $status.Invalidate()
 
@@ -3038,6 +3169,7 @@ function Show-Panel {
                 $gp = Start-GuardSetup
                 if ($gp) { $state.guardSetup = $gp }
             }
+            'browser' { Show-BrowserGuide $form; & $render }
             'updates' { Start-Process 'ms-settings:windowsupdate' }
             'account' { Start-Process 'ms-settings:otherusers' }
             default { Show-FindingList $form $grp.cat.title $grp.items; & $render }

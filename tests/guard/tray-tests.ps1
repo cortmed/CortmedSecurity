@@ -346,6 +346,71 @@ try {
     TCheck 'sessiz mod: kirmizi bildirim yine gosterilir' (Test-ToastAllowed $true $quiet) ''
     TCheck 'sessiz mod kapali: sari bildirim gosterilir' (Test-ToastAllowed $false $loud) ''
     TCheck 'quietMode varsayilani kapali' ((Get-Config).quietMode -eq $false) ''
+    # Tarayici korumasi: son gorulme dosyasi 7 gunden tazeyse yesil, aksi halde Onerilerimiz karti (kalkani sarartmaz)
+    $bd = Join-Path $work 'browserdata'
+    New-Item -ItemType Directory -Force $bd | Out-Null
+    $seenFile = Join-Path $bd 'browser-lastseen.txt'
+    $nowU = (Get-Date).ToUniversalTime()
+    $bcNone = Get-BrowserCheck $bd
+    TCheck 'tarayici: dosya yok -> kapali, oneri sunulur' ((-not $bcNone.ok) -and $bcNone.offer) ''
+    [IO.File]::WriteAllText($seenFile, $nowU.ToString('o'))
+    $bcFresh = Get-BrowserCheck $bd
+    TCheck 'tarayici: taze dosya -> Tarayici korumasi acik' ($bcFresh.ok -and $bcFresh.text -eq 'Tarayıcı koruması açık' -and -not $bcFresh.offer) "$($bcFresh.text)"
+    [IO.File]::WriteAllText($seenFile, $nowU.AddDays(-8).ToString('o'))
+    $bcOld = Get-BrowserCheck $bd
+    TCheck 'tarayici: 8 gunluk dosya -> oneri sunulur' ((-not $bcOld.ok) -and $bcOld.offer) ''
+    [IO.File]::WriteAllText($seenFile, $nowU.AddDays(-6).ToString('o'))
+    TCheck 'tarayici: 6 gunluk dosya -> acik' ((Get-BrowserCheck $bd).ok) ''
+    [IO.File]::WriteAllText($seenFile, 'bozuk tarih')
+    TCheck 'tarayici: bozuk dosya -> oneri sunulur' (-not (Get-BrowserCheck $bd).ok) ''
+    [IO.File]::WriteAllText($seenFile, $nowU.AddDays(2).ToString('o'))
+    TCheck 'tarayici: gelecekteki tarih -> oneri sunulur' (-not (Get-BrowserCheck $bd).ok) ''
+
+    $gOff = @(Get-AdviceGroups @() $false '' $true)
+    $gBrowser = @($gOff | Where-Object { $_.cat.title -eq 'Tarayıcı korumasını ekleyin' })
+    TCheck 'oneri karti: Tarayici korumasini ekleyin' ($gBrowser.Count -eq 1 -and $gBrowser[0].cat.button -eq 'Nasıl eklenir?' -and
+        $gBrowser[0].cat.text -eq 'Şifre tekrarı, sızmış şifre ve indirme kontrolü için tarayıcınıza Cortmed eklentisini ekleyin.') ''
+    TCheck 'oneri karti: tarayici acikken yok' (@(Get-AdviceGroups @() $false '' $false).Count -eq 0) ''
+    $gOrder = @(Get-AdviceGroups @() $true '' $true)
+    TCheck 'oneri karti: bekci karti once, tarayici sonra' ($gOrder.Count -eq 2 -and $gOrder[0].cat.id -eq 'guard' -and $gOrder[1].cat.id -eq 'browser') ''
+    $card = New-AdviceCard $gBrowser[0] 600 (New-Object Windows.Forms.ToolTip) { param($g) }
+    $cardTexts = @(All-Controls $card | ForEach-Object Text)
+    TCheck 'oneri karti kurulur, dugmesi var' ($card -and $cardTexts -contains 'Nasıl eklenir?' -and $cardTexts -contains 'Tarayıcı korumasını ekleyin') ($cardTexts -join '|')
+
+    # Rehber penceresi
+    $gf = $null
+    try { $gf = New-BrowserGuideForm } catch { Write-Host "  New-BrowserGuideForm: $($_.Exception.Message)" }
+    TCheck 'rehber penceresi kuruldu' ($gf -ne $null)
+    if ($gf) {
+        $folder = Join-Path $env:LOCALAPPDATA 'CortmedSecurity\browser'
+        TCheck 'rehber basligi' ($gf.Text -eq 'Tarayıcı korumasını ekleyin') $gf.Text
+        TCheck 'rehber gosterilmedi' (-not $gf.Visible) ''
+        $gbtn = @(All-Controls $gf | Where-Object { $_ -is [Windows.Forms.Button] } | ForEach-Object Text)
+        TCheck 'rehber: Chrome / Edge dugmeleri' ($gbtn -contains 'Chrome' -and $gbtn -contains 'Edge') ($gbtn -join '|')
+        TCheck 'rehber: Tarayiciyi ac dugmesi' ($gbtn -contains 'Tarayıcıyı aç') ($gbtn -join '|')
+        foreach ($b in 'Chrome', 'Edge') {
+            Set-BrowserGuideBrowser $gf $b
+            $gt = @(All-Controls $gf | ForEach-Object Text)
+            $addr = if ($b -eq 'Chrome') { 'chrome://extensions' } else { 'edge://extensions' }
+            $s3 = if ($b -eq 'Chrome') { 'Paketlenmemiş öğe yükle düğmesine basın.' } else { 'Paketten çıkarılmışı yükle düğmesine basın.' }
+            $s2 = if ($b -eq 'Chrome') { 'Sağ üstteki Geliştirici modu düğmesini açın.' } else { 'Sol alttaki Geliştirici modu düğmesini açın.' }
+            TCheck "rehber $b : adres" ($gt -contains $addr) ($gt -join '|')
+            TCheck "rehber $b : 4 adim metni" (($gt -contains 'Tarayıcınızda şu adresi açın:') -and ($gt -contains $s2) -and ($gt -contains $s3) -and ($gt -contains 'Şu klasörü seçin:')) ($gt -join '|')
+            TCheck "rehber $b : genisletilmis klasor yolu" ($gt -contains $folder -and $folder -notmatch '%') $folder
+            TCheck "rehber $b : Kopyala dugmeleri" ((@(All-Controls $gf | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Kopyala' }).Count -eq 1) -and
+                (Btn $gf 'Klasör yolunu kopyala')) ''
+            TCheck "rehber $b : numaralar 1-4" (($gt -contains '1') -and ($gt -contains '2') -and ($gt -contains '3') -and ($gt -contains '4')) ''
+            TCheck "rehber $b : not" ($gt -contains 'Eklenti şifrelerinizi bilgisayarınızdan dışarı göndermez.') ''
+        }
+        $other = if ($gf.Tag.browser -eq 'Edge') { 'chrome://extensions' } else { 'edge://extensions' }
+        TCheck 'rehber: secili olmayan tarayicinin adresi gorunmez' (@(All-Controls $gf | ForEach-Object Text) -notcontains $other) ''
+        $gf.Dispose()
+    }
+    # Tarayiciyi ac: yalnizca standart kurulum yollari, PATH'e guvenmez
+    $bp = Get-BrowserExePath 'Chrome'
+    TCheck 'tarayici yolu: standart klasorlerden biri ya da bos' ((-not $bp) -or ($bp -match '\\(Google\\Chrome\\Application\\chrome\.exe)$' -and (Test-Path $bp))) "$bp"
+    TCheck 'tarayici yolu: Edge' ((-not (Get-BrowserExePath 'Edge')) -or ((Get-BrowserExePath 'Edge') -match 'msedge\.exe$')) ''
+    TCheck 'Get-BrowserExePath PATH kullanmaz' ((Get-Command Get-BrowserExePath).Definition -notmatch 'Get-Command|\$env:PATH|\.Path\b') ''
 } catch {
     TCheck 'tepsi testleri calisti' $false $_.Exception.Message
 } finally {

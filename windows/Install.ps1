@@ -133,6 +133,41 @@ if (Test-Path $guardSetup) {
     }
 }
 
+# Tarayıcı koruması: eklenti dosyaları, köprü programı ve Chrome / Edge köprü kaydı (yönetici izni gerekmez).
+# Eklentiyi tarayıcıya kullanıcı panelden ekler; burada tarayıcı açılmaz. Hata olursa kurulum devam eder.
+try {
+    $extSrc = @((Join-Path $src 'browser\extension'), (Join-Path $src '..\browser\extension')) |
+        Where-Object { Test-Path (Join-Path $_ 'manifest.json') } | Select-Object -First 1
+    $idFile = @((Join-Path $src 'browser\extension-id.txt'), (Join-Path $src '..\browser\extension-id.txt')) |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    $hostDir = @((Join-Path $src 'browser'), $src) |
+        Where-Object { (Test-Path (Join-Path $_ 'CortmedBrowserHost.cs')) -and (Test-Path (Join-Path $_ 'NativeHostManifest.ps1')) } | Select-Object -First 1
+    if (-not $extSrc -or -not $idFile -or -not $hostDir) { throw 'eklenti dosyaları pakette bulunamadı' }
+    . (Join-Path $hostDir 'NativeHostManifest.ps1')
+
+    $extDest = Join-Path $dest 'browser'
+    New-Item -ItemType Directory -Force $extDest | Out-Null
+    Copy-Item (Join-Path $extSrc '*') $extDest -Recurse -Force
+
+    $hostExe = Join-Path $dest 'CortmedBrowserHost.exe'
+    $out = & $csc /nologo /target:exe /optimize+ /codepage:65001 "/out:$hostExe" /reference:System.dll /reference:System.Core.dll `
+        /reference:System.Web.Extensions.dll (Join-Path $hostDir 'CortmedBrowserHost.cs') 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ($out -join ' ') }
+
+    $extId = (Get-Content $idFile -Raw -Encoding UTF8).Trim()
+    $hostJson = Join-Path $dest 'com.cortmed.security.json'
+    $manifest = New-NativeHostManifestJson -HostPath $hostExe -ExtensionId $extId -TemplatePath (Join-Path $hostDir 'com.cortmed.security.json.template')
+    [IO.File]::WriteAllText($hostJson, $manifest, (New-Object Text.UTF8Encoding($false)))
+
+    foreach ($regPath in 'Software\Google\Chrome\NativeMessagingHosts\com.cortmed.security', 'Software\Microsoft\Edge\NativeMessagingHosts\com.cortmed.security') {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($regPath)
+        try { $key.SetValue('', $hostJson) } finally { $key.Close() }
+    }
+    Write-Host '  [OK] Tarayıcı koruması hazır; eklentiyi panelden "Nasıl eklenir?" ile tarayıcınıza ekleyin' -ForegroundColor Green
+} catch {
+    Write-Host "  Tarayıcı koruması hazırlanamadı; panelden sonra yeniden kurabilirsiniz ($($_.Exception.Message))" -ForegroundColor Yellow
+}
+
 function Start-Cortmed([string]$mode) {
     if ((Test-Path $exe) -and $mode -eq 'Watch') { Start-Process $exe -ArgumentList '--watch' }
     elseif (Test-Path $exe) { Start-Process $exe }
