@@ -1,0 +1,6 @@
+[
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":900,"ParentPid":800,"Image":"C:\\Windows\\explorer.exe","ParentImage":"C:\\Windows\\System32\\userinit.exe","CommandLine":"C:\\Windows\\Explorer.EXE"},
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":3000,"ParentPid":900,"Image":"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","ParentImage":"C:\\Windows\\explorer.exe","CommandLine":"\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\""},
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":3010,"ParentPid":3000,"Image":"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","ParentImage":"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","CommandLine":"msedge.exe --type=renderer"},
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":7000,"ParentPid":3000,"Image":"C:\\Users\\Test\\Downloads\\CortmedBehaviorTest.exe","ParentImage":"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","CommandLine":"\"C:\\Users\\Test\\Downloads\\CortmedBehaviorTest.exe\""}
+]

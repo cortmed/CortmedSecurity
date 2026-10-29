@@ -23,6 +23,8 @@ namespace Cortmed.Guard
         public HashSet<string> NeverFreeze = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // LSASS'a erisebilen tam yol kaliplari.
         public HashSet<string> TrustedImages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Cocuklari kendi agacini baslatan programlar: dosya adi ("msedge.exe") ya da yol sonu ("\Discord\Update.exe").
+        public HashSet<string> Launchers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public const int MinPoints = -100, MaxPoints = 200;
 
@@ -52,6 +54,7 @@ namespace Cortmed.Guard
 
             FillPaths(root, "neverFreeze", r.NeverFreeze);
             FillPaths(root, "trustedImages", r.TrustedImages);
+            FillNames(root, "launchers", r.Launchers);
             Validate(r);
             return r;
         }
@@ -133,6 +136,18 @@ namespace Cortmed.Guard
                 res.Add(s);
             }
             return res;
+        }
+
+        // "ad.exe" (klasorsuz) ya da "\klasor\ad.exe" (yol sonu).
+        static void FillNames(Dictionary<string, object> d, string key, HashSet<string> set)
+        {
+            foreach (string s in GetList(d, key))
+            {
+                bool ok = s.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && s.Length > 4 && s.IndexOf('/') < 0 && s.IndexOf(':') < 0
+                    && (s.IndexOf('\\') < 0 || (s[0] == '\\' && s.IndexOf("\\\\", StringComparison.Ordinal) < 0 && s.LastIndexOf('\\') < s.Length - 5));
+                if (!ok) throw new InvalidDataException("'" + key + "' dosya adı (ad.exe) ya da yol sonu (\\klasör\\ad.exe) olmalı: " + s);
+                set.Add(s);
+            }
         }
 
         static void FillPaths(Dictionary<string, object> d, string key, HashSet<string> set)

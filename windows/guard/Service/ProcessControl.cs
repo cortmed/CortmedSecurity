@@ -56,13 +56,33 @@ namespace Cortmed.Guard
             var kf = KnownFolders.Current;
             if (PathRules.MatchesAny(NeverFreezeFloor, fullPath, kf)) return true;
             if (r != null && PathRules.MatchesAny(r.NeverFreeze, fullPath, kf)) return true;
+            // System32/SysWOW64 altindaki Windows hizmet surecleri (svchost, WmiPrvSE, dllhost...):
+            // dondurulursa COM/WMI/UWP ve altindaki her sey durur, bilgisayar donmus gorunur.
+            if (PathRules.IsWindowsHost(fullPath, kf)) return true;
             return false;
         }
 
         // Saf karar: tam yol ve oturum numarasi verilen surec dondurulebilir mi?
+        // Oturum 0 (hizmetler) ve bilinmeyen oturum (-1) asla.
         public static bool CanFreezeImage(string fullPath, int sessionId, BehaviorRules r)
         {
+            if (sessionId <= 0) return false;
             return !IsProtectedImage(fullPath, r);
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ProcessIdToSessionId(uint pid, out uint session);
+
+        // Surecin oturum numarasi; okunamazsa -1.
+        public static int SessionOf(int pid)
+        {
+            try
+            {
+                uint s;
+                if (!ProcessIdToSessionId((uint)pid, out s)) return -1;
+                return (int)s;
+            }
+            catch { return -1; }
         }
 
         public static bool CanFreeze(int pid, BehaviorRules r)
@@ -73,7 +93,7 @@ namespace Cortmed.Guard
                 if (pid == Process.GetCurrentProcess().Id) return false;
                 string path = FullImagePath(pid);
                 if (path == null) return false; // yolu okunamayan surec dondurulmez
-                return CanFreezeImage(path, 1, r);
+                return CanFreezeImage(path, SessionOf(pid), r);
             }
             catch { return false; }
         }

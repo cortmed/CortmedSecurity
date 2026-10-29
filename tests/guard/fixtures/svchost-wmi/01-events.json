@@ -1,0 +1,11 @@
+[
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":700,"ParentPid":600,"Image":"C:\\Windows\\System32\\services.exe","ParentImage":"C:\\Windows\\System32\\wininit.exe","CommandLine":"C:\\Windows\\system32\\services.exe"},
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":1000,"ParentPid":700,"Image":"C:\\Windows\\System32\\svchost.exe","ParentImage":"C:\\Windows\\System32\\services.exe","CommandLine":"C:\\Windows\\system32\\svchost.exe -k DcomLaunch -p"},
+  {"EventId":1,"Time":"2026-10-29T10:00:01Z","Pid":1100,"ParentPid":1000,"Image":"C:\\Windows\\System32\\wbem\\WmiPrvSE.exe","ParentImage":"C:\\Windows\\System32\\svchost.exe","CommandLine":"C:\\Windows\\system32\\wbem\\wmiprvse.exe -Embedding"},
+  {"EventId":10,"Time":"2026-10-29T10:00:02Z","Pid":1100,"Image":"C:\\Windows\\System32\\wbem\\WmiPrvSE.exe","TargetPid":650,"TargetImage":"C:\\Windows\\System32\\lsass.exe","GrantedAccess":"0x1000"},
+  {"EventId":1,"Time":"2026-10-29T10:00:03Z","Pid":1200,"ParentPid":1100,"Image":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","ParentImage":"C:\\Windows\\System32\\wbem\\WmiPrvSE.exe","CommandLine":"powershell.exe -WindowStyle Hidden -File C:\\ProgramData\\Vendor\\check.ps1"},
+  {"EventId":13,"Time":"2026-10-29T10:00:04Z","Pid":1200,"Image":"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe","TargetObject":"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\VendorAgent","Details":"C:\\Program Files\\Vendor\\agent.exe"},
+  {"EventId":13,"Time":"2026-10-29T10:00:05Z","Pid":1000,"Image":"C:\\Windows\\System32\\svchost.exe","TargetObject":"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\X","Details":"C:\\x.exe"},
+  {"EventId":13,"Time":"2026-10-29T10:00:06Z","Pid":1000,"Image":"C:\\Windows\\System32\\svchost.exe","TargetObject":"HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Exclusions\\Paths\\C:\\x"},
+  {"EventId":8,"Time":"2026-10-29T10:00:07Z","Pid":1000,"Image":"C:\\Windows\\System32\\svchost.exe","TargetPid":1100,"TargetImage":"C:\\Windows\\System32\\wbem\\WmiPrvSE.exe"}
+]

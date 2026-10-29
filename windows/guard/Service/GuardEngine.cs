@@ -213,8 +213,8 @@ namespace Cortmed.Guard
         readonly IProcessControl _control;
         readonly IPromptSink _sink;
         readonly GuardLog _log;
-        readonly ProcessTree _tree = new ProcessTree();
-        BehaviorRules _rules;
+        readonly ProcessTree _tree;
+        volatile BehaviorRules _rules;
         Classifier _classifier;
         ScoreBoard _board;
         readonly Dictionary<int, int> _baseScores = new Dictionary<int, int>();
@@ -242,6 +242,9 @@ namespace Cortmed.Guard
             _control = control;
             _sink = sink;
             _log = log ?? new GuardLog(Path.Combine(dataDir, "guard.log"));
+            // Tarayici, Discord, arsivci ve Windows hizmet sureclerinin cocuklari kendi agaclarini baslatir;
+            // puan, suc ve dondurma baslatana degil, asil programa yazilir.
+            _tree = new ProcessTree(img => PathRules.IsRootStarter(img, _rules, KnownFolders.Current));
             SetRules(r);
             LoadAllowed();
             LoadPending();
@@ -472,9 +475,22 @@ namespace Cortmed.Guard
             }
 
             // Freeze
-            var order = new List<int> { root };
-            foreach (int pid in _tree.Subtree(root)) if (pid != root) order.Add(pid);
-            List<int> frozen = _control.FreezeTree(new List<int>(order)) ?? new List<int>();
+            // Imaji bilinen korumali surecler (taban liste, kurallar, Windows hizmet surecleri) hic
+            // FreezeTree'ye verilmez; kok korumaliysa agacin hicbir parcasi dondurulmaz (soru koku adlandirir).
+            // Canli denetim (oturum 0, tam yol) ayrica ProcessControl.CanFreeze'dedir.
+            var order = new List<int>();
+            if (string.IsNullOrEmpty(image) || !ProcessControl.IsProtectedImage(image, _rules))
+            {
+                order.Add(root);
+                foreach (int pid in _tree.Subtree(root))
+                {
+                    if (pid == root) continue;
+                    string img = _tree.ImageOf(pid);
+                    if (!string.IsNullOrEmpty(img) && ProcessControl.IsProtectedImage(img, _rules)) continue;
+                    order.Add(pid);
+                }
+            }
+            List<int> frozen = order.Count == 0 ? new List<int>() : (_control.FreezeTree(new List<int>(order)) ?? new List<int>());
             if (frozen.Count == 0)
             {
                 _log.Write("Dondurma eşiği aşıldı ama ağaçta dondurulabilen süreç yok: " + image + " (puan " + d.Score + ") " + reasons);

@@ -395,6 +395,65 @@ public static class GuardTests
         Assert(t.ImageOf(30).EndsWith("cmd.exe"), "image");
     }
 
+    static ProcessTree EngineTree()
+    {
+        return new ProcessTree(img => PathRules.IsRootStarter(img, Rules(), KnownFolders.Current));
+    }
+
+    [Test] static void ChildrenOfWindowsHostsStartTheirOwnTree()
+    {
+        string sys = Environment.SystemDirectory;
+        var t = EngineTree();
+        t.OnProcessStart(Start(700, 600, Path.Combine(sys, "services.exe")));
+        t.OnProcessStart(Start(1000, 700, Path.Combine(sys, "svchost.exe")));
+        t.OnProcessStart(Start(1100, 1000, Path.Combine(sys, @"wbem\WmiPrvSE.exe")));
+        t.OnProcessStart(Start(1200, 1100, PS));
+        t.OnProcessStart(Start(1300, 1000, Path.Combine(sys, "taskhostw.exe")));
+        t.OnProcessStart(Start(1310, 1300, @"C:\Program Files\Vendor\tool.exe"));
+        Assert(t.RootOf(1000) == 1000, "svchost kendi koku (services cocugu)");
+        Assert(t.RootOf(1100) == 1100, "svchost cocugu WmiPrvSE kendi koku");
+        Assert(t.RootOf(1200) == 1200, "WmiPrvSE cocugu kendi koku");
+        Assert(t.RootOf(1310) == 1310, "taskhostw cocugu kendi koku");
+        foreach (string h in new[] { "dllhost.exe", "RuntimeBroker.exe", "sihost.exe", "userinit.exe", "winlogon.exe" })
+            Assert(PathRules.IsRootStarter(Path.Combine(sys, h), Rules(), KnownFolders.Current), h);
+        Assert(PathRules.IsRootStarter(Path.Combine(Path.GetDirectoryName(sys), @"SysWOW64\dllhost.exe"), Rules(), KnownFolders.Current), "SysWOW64");
+
+        // ayni ad baska klasorde: kok baslatmaz
+        t.OnProcessStart(Start(2000, 900, @"C:\Users\k\Downloads\svchost.exe"));
+        t.OnProcessStart(Start(2100, 2000, @"C:\Users\k\Downloads\payload.exe"));
+        Assert(t.RootOf(2100) == 2000, "sahte svchost'un cocugu onun agacinda kalir");
+    }
+
+    [Test] static void ChildrenOfLaunchersStartTheirOwnTree()
+    {
+        var t = EngineTree();
+        t.OnProcessStart(Start(900, 800, @"C:\Windows\explorer.exe"));
+        t.OnProcessStart(Start(3000, 900, @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
+        t.OnProcessStart(Start(3010, 3000, @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
+        t.OnProcessStart(Start(7000, 3000, @"C:\Users\k\Downloads\CortmedBehaviorTest.exe"));
+        Assert(t.RootOf(3000) == 3000 && t.RootOf(7000) == 7000, "Edge'den acilan program kendi koku");
+        string[] launchers = { @"C:\Program Files\Google\Chrome\Application\chrome.exe", @"C:\Program Files\Mozilla Firefox\firefox.exe",
+            @"C:\Users\k\AppData\Local\Programs\Opera\opera.exe", @"C:\Users\k\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe",
+            @"C:\Users\k\AppData\Local\Discord\app-1.0.9\Discord.exe", @"C:\Users\k\AppData\Local\Discord\Update.exe",
+            @"C:\Program Files\WinRAR\WinRAR.exe", @"C:\Program Files\7-Zip\7zFM.exe", @"C:\Users\k\AppData\Roaming\Telegram Desktop\Telegram.exe",
+            @"C:\Users\k\AppData\Local\Microsoft\Teams\current\Teams.exe" };
+        int pid = 4000;
+        foreach (string l in launchers)
+        {
+            t.OnProcessStart(Start(pid, 900, l));
+            t.OnProcessStart(Start(pid + 1, pid, @"C:\Users\k\Downloads\x.exe"));
+            Assert(t.RootOf(pid + 1) == pid + 1, "baslatici: " + l);
+            pid += 10;
+        }
+        // Discord disindaki Update.exe baslatici degildir
+        t.OnProcessStart(Start(5000, 900, @"C:\Users\k\AppData\Local\Other\Update.exe"));
+        t.OnProcessStart(Start(5001, 5000, @"C:\Users\k\Downloads\x.exe"));
+        Assert(t.RootOf(5001) == 5000, "baska Update.exe");
+        var noLaunch = BehaviorRules.Parse(RulesJson(d => d["launchers"] = new object[0]));
+        Assert(!PathRules.IsRootStarter(launchers[0], noLaunch, KnownFolders.Current), "liste imzali kurallardan gelir");
+        Assert(ParseRejects(d => d["launchers"] = new object[] { @"C:\x\a.exe" }), "baslatici: ad ya da \\klasor\\ad.exe");
+    }
+
     [Test] static void ExitedParentDoesNotBreakRootOfChildren()
     {
         var t = new ProcessTree();
@@ -620,6 +679,25 @@ public static class GuardTests
         Assert(!ProcessControl.CanFreezeImage(Path.Combine(pf, @"Foo\foo.exe"), 1, more), "kuralla eklenen");
         Assert(ProcessControl.CanFreezeImage(Path.Combine(pf, @"Foo\foo.exe"), 1, Rules()), "eklenmemisse dondurulabilir");
         Assert(!ProcessControl.CanFreezeImage("", 1, Rules()) && !ProcessControl.CanFreezeImage(null, 1, Rules()), "yolu bilinmeyen dondurulmaz");
+    }
+
+    [Test] static void SessionZeroAndServiceHostsAreNeverFrozen()
+    {
+        string sys = Environment.SystemDirectory;
+        Assert(!ProcessControl.CanFreezeImage(@"C:\Users\x\Downloads\a.exe", 0, Rules()), "oturum 0 dondurulmaz");
+        Assert(!ProcessControl.CanFreezeImage(@"C:\Users\x\Downloads\a.exe", -1, Rules()), "oturumu bilinmeyen dondurulmaz");
+        Assert(ProcessControl.CanFreezeImage(@"C:\Users\x\Downloads\a.exe", 1, Rules()), "kullanici oturumu dondurulabilir");
+        var empty = BehaviorRules.Parse(RulesJson(d => d["neverFreeze"] = new object[0]));
+        foreach (string h in new[] { "svchost.exe", @"wbem\WmiPrvSE.exe", "taskhostw.exe", "dllhost.exe", "RuntimeBroker.exe", "sihost.exe" })
+            Assert(!ProcessControl.CanFreezeImage(Path.Combine(sys, h), 1, empty), "hizmet sureci: " + h);
+        Assert(ProcessControl.CanFreezeImage(@"C:\Users\x\Downloads\svchost.exe", 1, Rules()), "Downloads svchost.exe dondurulabilir");
+        // canli: bu bilgisayardaki svchost'lar (oturum 0) asla
+        int n = 0;
+        foreach (var pr in System.Diagnostics.Process.GetProcessesByName("svchost"))
+        {
+            Assert(!ProcessControl.CanFreeze(pr.Id, Rules()), "canli svchost " + pr.Id);
+            if (++n >= 5) break;
+        }
     }
 
     [Test] static void FromXmlMapsProcessCreateAndRegistryFields()
@@ -982,6 +1060,41 @@ public static class GuardTests
         string findings = ReadData(dir, "findings.json");
         Assert(findings.Contains("YELLOW") && findings.Contains("behavior:" + EvilHash), "50 puanda Warn bulgusu");
         Assert(ReadData(dir, "guard.log").Length > 0, "guard.log yazilmali");
+    }
+
+    [Test] static void ReplayTestProgramFromEdgeFreezesTheProgramNotEdge()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        var decisions = new List<Decision>();
+        g.DecisionMade = (d, img) => decisions.Add(d);
+        foreach (var e in GuardReplay.LoadEvents(RepoPath("tests/guard/fixtures/behavior-test-edge"))) g.OnEvent(e);
+        Assert(c.Frozen.Count == 1, "bir dondurma: " + c.Frozen.Count);
+        Assert(c.Frozen[0].Count == 1 && c.Frozen[0][0] == 7000, "yalnizca deneme programi: " + string.Join(",", c.Frozen[0]));
+        Assert(decisions.All(d => d.RootPid == 7000), "tum kararlar programin kokunde");
+        Assert(decisions.Any(d => d.Level == DecisionLevel.Freeze && d.Score >= 80 && d.Reasons.Count == 2), "Freeze, iki neden");
+        Assert(s.Sent.Count == 1 && s.Sent[0].Program == "CortmedBehaviorTest.exe" && s.Sent[0].Path.EndsWith(@"\Downloads\CortmedBehaviorTest.exe"), "soru programi adlandirir");
+        string findings = ReadData(dir, "findings.json");
+        Assert(findings.Contains("CortmedBehaviorTest.exe") && !findings.Contains("msedge"), "bulgu programi adlandirir: " + findings);
+        Assert(!ReadData(dir, "pending.json").Contains("msedge"), "bekleyen soru Edge'i adlandirmaz");
+    }
+
+    [Test] static void ReplaySvchostRootIsNeverFrozenAndWmiChildrenAreOwnRoots()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        var decisions = new List<Decision>();
+        g.DecisionMade = (d, img) => decisions.Add(d);
+        foreach (var e in GuardReplay.LoadEvents(RepoPath("tests/guard/fixtures/svchost-wmi"))) g.OnEvent(e);
+        Assert(decisions.Any(d => d.RootPid == 1000 && d.Level == DecisionLevel.Freeze), "svchost'un kendi davranislari esigi asar");
+        Assert(decisions.All(d => d.RootPid == 1000), "WMI ve PowerShell cocuklari svchost'a puan yazmaz: "
+            + string.Join(",", decisions.Select(d => d.RootPid + "/" + d.Score)));
+        Assert(!c.Frozen.Any(l => l.Contains(1000) || l.Contains(1100) || l.Contains(1200)), "svchost agaci dondurulmamali");
+        Assert(s.Sent.Count == 0 && !ReadData(dir, "pending.json").Contains("svchost"), "soru yok");
+        string findings = ReadData(dir, "findings.json");
+        Assert(findings.Contains("svchost.exe") && findings.Contains("dondurulamad"), "dondurulamadi bulgusu: " + findings);
     }
 
     [Test] static void KillAnswerKillsTreeAndRecordsFinding()

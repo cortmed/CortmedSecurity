@@ -37,5 +37,9 @@
     "{Users}\\*\\AppData\\Local\\CortmedSecurity\\CortmedSecurity.exe",
     "{Windows}\\WinSxS\\*\\TiWorker.exe",
     "{Windows}\\servicing\\TrustedInstaller.exe"
+  ],
+  "launchers": [
+    "msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe",
+    "Discord.exe", "\\Discord\\Update.exe", "WinRAR.exe", "7zFM.exe", "Telegram.exe", "Teams.exe"
   ]
 }

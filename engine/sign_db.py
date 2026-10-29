@@ -31,6 +31,9 @@ FILES = ["android.cmdb", "windows.cmdb", "windows.yarc", "android_rules.json", "
 BEHAVIORS = ["Persistence", "TamperOtherApp", "HiddenScript", "DisableProtection", "Injection", "LsassAccess", "MassFileChange"]
 INT_KEYS = ["freezeAt", "warnAt", "windowSeconds", "massFileCount", "massFileSeconds", "trustedLocationBonus"]
 PATH_LIST_KEYS = ["neverFreeze", "trustedImages"]
+NAME_LIST_KEYS = ["launchers"]
+# "ad.exe" ya da "\klasor\ad.exe" (yol sonu); surucu harfi, "/" ve bos klasor yok
+NAME_PATTERN = re.compile(r"^(?:[^\\/:]+|(?:\\[^\\/:]+)+)\.exe$", re.IGNORECASE)
 MIN_POINTS, MAX_POINTS = -100, 200
 PATH_PATTERN = re.compile(r"^(\{(System32|SysWOW64|Windows|ProgramFiles|ProgramFilesX86|ProgramData|Users)\}|[A-Za-z]:)\\.+$")
 
@@ -97,6 +100,15 @@ def validate_rules(rules):
         for s in lst:
             if not isinstance(s, str) or s.strip() != s or not PATH_PATTERN.match(s):
                 errors.append(f"'{key}' tam yol olmali ({{System32}}\\... gibi): {s!r}")
+
+    for key in NAME_LIST_KEYS:
+        lst = rules.get(key)
+        if not isinstance(lst, list):
+            errors.append(f"'{key}' eksik ya da liste degil")
+            continue
+        for s in lst:
+            if not isinstance(s, str) or not NAME_PATTERN.match(s):
+                errors.append(f"'{key}' dosya adi (ad.exe) ya da yol sonu (\\klasor\\ad.exe) olmali: {s!r}")
     return errors
 
 

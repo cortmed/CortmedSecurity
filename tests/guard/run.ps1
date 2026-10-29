@@ -159,6 +159,8 @@ if (-not $py) {
             'neden eksik'             = { param($j) $j.reasons.PSObject.Properties.Remove('LsassAccess') }
             'neverFreeze yalniz ad'   = { param($j) $j.neverFreeze = @('csrss.exe') }
             'neverFreeze eksik'       = { param($j) $j.PSObject.Properties.Remove('neverFreeze') }
+            'launchers eksik'         = { param($j) $j.PSObject.Properties.Remove('launchers') }
+            'launchers tam yol'       = { param($j) $j.launchers = @('C:\x\a.exe') }
         }
         $n = 0
         foreach ($name in $variants.Keys) {
@@ -417,6 +419,16 @@ try {
             Check 'replay nedeni: Persistence' ($reasons.Count -ge 1 -and $reasons[0] -eq $want1) $line
             Check 'replay nedeni: TamperOtherApp' ($reasons.Count -eq 2 -and $reasons[1] -eq $want2) $line
         }
+
+        # Edge'in indirme cubugundan acilan deneme programi: kok program olur, Edge degil
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $reOut = @(& $rgExe --replay (Join-Path $root 'tests\guard\fixtures\behavior-test-edge') --rules (Join-Path $root 'engine\rules\behavior_rules.json') --data $rgData | ForEach-Object { "$_" })
+        $reCode = $LASTEXITCODE
+        [Console]::OutputEncoding = $prevEnc
+        $efz = @($reOut | Where-Object { $_ -like 'Freeze *' })
+        Check 'replay (Edge) cikis kodu 0' ($reCode -eq 0) "kod $reCode"
+        Check 'replay (Edge) tam bir Freeze, kok deneme programi' ($efz.Count -eq 1 -and $efz[0] -match 'k.k=7000 ' -and $efz[0] -match '\\Downloads\\CortmedBehaviorTest\.exe \|') ($reOut -join ' / ')
+        Check 'replay (Edge) hicbir karar Edge''i adlandirmaz' (@($reOut | Where-Object { $_ -match 'msedge' }).Count -eq 0) ($reOut -join ' / ')
     }
 } finally { Remove-Item $btTmp -Recurse -Force -ErrorAction SilentlyContinue }
 

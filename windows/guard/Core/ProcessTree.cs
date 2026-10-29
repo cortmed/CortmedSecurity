@@ -5,8 +5,10 @@ using System.IO;
 namespace Cortmed.Guard
 {
     // Calisan sureclerin ebeveyn agaci.
-    // Kok kurali: ebeveyni bilinmeyen ya da ebeveyni explorer.exe/services.exe olan
-    // surec kendi kokudur; diger sureclerin koku ebeveyninin kokudur.
+    // Kok kurali: ebeveyni bilinmeyen ya da ebeveyni "kok baslatan" (isRootStarter(ebeveyn imaji))
+    // olan surec kendi kokudur; diger sureclerin koku ebeveyninin kokudur. Motor PathRules.IsRootStarter
+    // verir (explorer/services, Windows hizmet surecleri, tarayici/Discord/arsivci baslaticilari);
+    // verilmezse yalnizca explorer.exe/services.exe. Karar G/C yapmaz.
     // Tasarim: kok, surec BASLARKEN hesaplanip kaydedilir. Cikan bir surec, hayattaki
     // torunu kaldigi surece kayitta tutulur (RootOf/ImageOf bozulmasin); torunu kalmayinca silinir.
     // Cikis olayi kacirilan surecler pid yeniden kullanilana kadar kayitta kalir (pid uzayi ile sinirli).
@@ -25,9 +27,22 @@ namespace Cortmed.Guard
 
         readonly Dictionary<int, Node> _nodes = new Dictionary<int, Node>();
         readonly object _lock = new object();
+        readonly Func<string, bool> _isRootStarter;
 
-        static bool IsShell(string image)
+        public ProcessTree() : this(null) { }
+
+        public ProcessTree(Func<string, bool> isRootStarter)
         {
+            _isRootStarter = isRootStarter;
+        }
+
+        bool IsShell(string image)
+        {
+            if (_isRootStarter != null)
+            {
+                try { return _isRootStarter(image); }
+                catch { return false; }
+            }
             string n = FileName(image);
             return n.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase)
                 || n.Equals("services.exe", StringComparison.OrdinalIgnoreCase);

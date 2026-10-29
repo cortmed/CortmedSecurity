@@ -135,6 +135,33 @@ namespace Cortmed.Guard
             return i >= 0 ? path.Substring(i + 1) : path;
         }
 
+        // Imzali kurallardaki "launchers": klasorsuz ad dosya adiyla, "\" ile baslayan yol sonuyla eslesir.
+        public static bool IsLauncher(string path, IEnumerable<string> launchers)
+        {
+            if (string.IsNullOrEmpty(path) || launchers == null) return false;
+            string p = Normalize(path);
+            string name = FileName(p);
+            foreach (string l in launchers)
+            {
+                if (string.IsNullOrEmpty(l)) continue;
+                if (l[0] == '\\') { if (p.EndsWith(l, OIC)) return true; }
+                else if (name.Equals(l, OIC)) return true;
+            }
+            return false;
+        }
+
+        // Ebeveyni bu imaj olan surec yeni bir agac baslatir (kendi kokudur):
+        // explorer.exe / services.exe (ad), System32/SysWOW64 altindaki Windows hizmet surecleri (tam yol)
+        // ve imzali kurallardaki baslaticilar (tarayicilar, Discord, arsivciler...).
+        public static bool IsRootStarter(string parentImage, BehaviorRules r, KnownFolders kf)
+        {
+            if (string.IsNullOrEmpty(parentImage)) return false;
+            string name = FileName(Normalize(parentImage));
+            if (name.Equals("explorer.exe", OIC) || name.Equals("services.exe", OIC)) return true;
+            if (IsWindowsHost(parentImage, kf)) return true;
+            return r != null && IsLauncher(parentImage, r.Launchers);
+        }
+
         // Tam yolu System32 ya da SysWOW64 altinda (alt klasorler dahil, or. wbem) olan Windows hizmet sureci.
         public static bool IsWindowsHost(string path, KnownFolders kf)
         {
