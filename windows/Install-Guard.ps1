@@ -37,6 +37,7 @@ function First([string[]]$paths) { $paths | Where-Object { Test-Path $_ } | Sele
 $guardDir = Join-Path $Source 'guard'
 $engineCs = Join-Path $Source 'CortmedEngine.cs'
 $sysmonXml = Join-Path $guardDir 'sysmon-cortmed.xml'
+$uninstaller = Join-Path $Source 'Uninstall-Guard.ps1'
 $rules = First @((Join-Path $Source 'behavior_rules.json'), (Join-Path $Source '..\engine\rules\behavior_rules.json'))
 $sigDir = @($Source, (Join-Path $Source '..\engine\dist')) |
     Where-Object { (Test-Path (Join-Path $_ 'manifest.json')) -and (Test-Path (Join-Path $_ 'manifest.sig')) } | Select-Object -First 1
@@ -49,6 +50,7 @@ if ($csFiles.Count -eq 0) { $missing += 'guard\Core, guard\Service' }
 if (-not (Test-Path $engineCs)) { $missing += 'CortmedEngine.cs' }
 if (-not (Test-Path $sysmonXml)) { $missing += 'guard\sysmon-cortmed.xml' }
 if (-not $rules) { $missing += 'behavior_rules.json' }
+if (-not (Test-Path $uninstaller)) { $missing += 'Uninstall-Guard.ps1' }
 if ($missing) { throw "Davranış bekçisi dosyaları bulunamadı: $($missing -join ', ')" }
 
 # Sysmon durumu: hizmeti varsa kurulu. Bizim isaretimiz varsa onu biz kurmusuzdur.
@@ -67,6 +69,7 @@ else { 'Sysmon önceden kurulu, dokunulmayacak' }
 $plan = @(
     "$app ve $data oluşturulacak; yalnızca yöneticiler ve sistem yazabilecek, kullanıcılar yalnızca okuyabilecek",
     "Bekçi kaynakları $app\src klasörüne kopyalanıp orada CortmedGuard.exe olarak derlenecek",
+    "Kaldırma betiği $app\Uninstall-Guard.ps1 olarak kopyalanacak",
     "Davranış kuralları ve Sysmon ayarı $data klasörüne kopyalanacak",
     $sysmonStep,
     $(if ($guardExists) { 'CortmedGuard hizmeti durdurulup güncellenecek ve yeniden başlatılacak' }
@@ -180,6 +183,8 @@ try {
     $out = & $csc @cscArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $newExe)) { throw "CortmedGuard derlenemedi: $($out -join ' ')" }
     Write-Host '  [OK] CortmedGuard.exe derlendi' -ForegroundColor Green
+    # Kaldirma betigi: Uninstall.ps1 yalnizca bu (kullanicinin yazamadigi) kopyayi yukseltir
+    Copy-Item $uninstaller $app -Force
 
     # 4) Sysmon
     if ($sysmonPresent -and -not $sysmonOurs) {

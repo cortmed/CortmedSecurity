@@ -159,6 +159,7 @@ Check 'Install-Guard -WhatIf: Sysmon kurulacak' ($rAbsent[0] -match 'Sysmon kuru
 Check 'Install-Guard -WhatIf: Sysmon onceden kurulu' ($rPresent[0] -match ('Sysmon ' + [char]0xF6 + 'nceden kurulu, dokunulmayacak')) $rPresent[0]
 Check 'Install-Guard -WhatIf: Sysmon yokken onceden kurulu demez' ($rAbsent[0] -notmatch 'dokunulmayacak') ''
 Check 'Install-Guard -WhatIf: hizmet adimi listelenir' ($rAbsent[0] -match 'CortmedGuard') ''
+Check 'Install-Guard -WhatIf: kaldirma betigi Program Files''a kopyalanir' ($rAbsent[0] -match 'Uninstall-Guard\.ps1') ''
 $after = DirState
 Check 'Install-Guard -WhatIf hicbir sey olusturmaz' ($before -eq $after) "once: $before / sonra: $after"
 
