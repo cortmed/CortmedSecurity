@@ -368,6 +368,33 @@ public static class GuardTests
         Assert(sb.Add(2, 0, null, t.AddSeconds(10)).Score == 30, "active kept");
     }
 
+    // ---- dosya guveni ----
+
+    [Test] static void NotepadIsTrusted() { Assert(FileTrust.BaseScore(@"C:\Windows\System32\notepad.exe", Rules()) == -30); }
+
+    [Test] static void MissingFileScoresFifteen() { Assert(FileTrust.BaseScore(@"C:\nonexistent\nope.exe", Rules()) == 15); }
+
+    [Test] static void UnsignedExeInTempScoresThirty()
+    {
+        string exe = Path.Combine(Path.GetTempPath(), "cortmed_unsigned_" + Guid.NewGuid().ToString("N") + ".exe");
+        string src = Path.ChangeExtension(exe, ".cs");
+        try
+        {
+            File.WriteAllText(src, "class P { static void Main() { } }");
+            string csc = Path.Combine(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(), "csc.exe");
+            var psi = new System.Diagnostics.ProcessStartInfo(csc, "/nologo /out:\"" + exe + "\" \"" + src + "\"");
+            psi.UseShellExecute = false; psi.CreateNoWindow = true;
+            using (var p = System.Diagnostics.Process.Start(psi)) { p.WaitForExit(); Assert(p.ExitCode == 0, "csc"); }
+            Assert(!FileTrust.IsValidlySigned(exe), "unsigned");
+            Assert(FileTrust.BaseScore(exe, Rules()) == 30, "score");
+        }
+        finally
+        {
+            try { File.Delete(exe); } catch { }
+            try { File.Delete(src); } catch { }
+        }
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
