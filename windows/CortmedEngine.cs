@@ -1,11 +1,15 @@
 // Cortmed Engine - Windows tarafi parmak izi veritabani okuyucu (CMDB v1).
 // PowerShell 5.1 Add-Type ile derlenir; bu yuzden C# 5 sozdizimi kullanilir.
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Cortmed
 {
@@ -254,6 +258,304 @@ namespace Cortmed
             byte[] r = new byte[s.Length / 2];
             for (int i = 0; i < r.Length; i++) r[i] = Convert.ToByte(s.Substring(i * 2, 2), 16);
             return r;
+        }
+    }
+
+    // Davranis bekcisi servisine (named pipe) baglanan tepsi istemcisi.
+    // Yalnizca System/System.Core/mscorlib kullanir (PowerShell Add-Type ile derlenir).
+    public class GuardClient : IDisposable
+    {
+        const int MaxLine = 4096;
+        const int MaxQueue = 256;
+
+        readonly string _pipeName;
+        readonly object _lock = new object();
+        readonly Queue<string> _asks = new Queue<string>();
+        readonly ManualResetEvent _stop = new ManualResetEvent(false);
+        readonly Thread _thread;
+        NamedPipeClientStream _pipe;
+        volatile bool _connected;
+        volatile bool _sysmonOk;
+        volatile bool _sysmonPre;
+        volatile bool _disposed;
+
+        public GuardClient(string pipeName)
+        {
+            _pipeName = pipeName;
+            _thread = new Thread(Run);
+            _thread.IsBackground = true;
+            _thread.Name = "GuardClient";
+            _thread.Start();
+        }
+
+        public bool Connected { get { return _connected; } }
+        public bool SysmonOk { get { return _sysmonOk; } }
+        public bool SysmonPreexisting { get { return _sysmonPre; } }
+
+        public bool TryDequeuePrompt(out string promptJson)
+        {
+            lock (_lock)
+            {
+                if (_asks.Count > 0) { promptJson = _asks.Dequeue(); return true; }
+            }
+            promptJson = null;
+            return false;
+        }
+
+        public void Answer(string id, string decision)
+        {
+            try
+            {
+                if (id == null || decision == null) return;
+                byte[] data = new UTF8Encoding(false).GetBytes(
+                    "{\"type\":\"answer\",\"id\":" + Quote(id) + ",\"decision\":" + Quote(decision) + "}\n");
+                lock (_lock)
+                {
+                    NamedPipeClientStream p = _pipe;
+                    if (!_connected || p == null) return;
+                    Task t = p.WriteAsync(data, 0, data.Length);
+                    if (!t.Wait(2000))
+                    {
+                        _connected = false;
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        static string Quote(string s)
+        {
+            StringBuilder sb = new StringBuilder(s.Length + 2);
+            sb.Append('"');
+            foreach (char c in s)
+            {
+                if (c == '"') sb.Append("\\\"");
+                else if (c == '\\') sb.Append("\\\\");
+                else if (c < 0x20 || (int)c == 0x2028 || (int)c == 0x2029) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                else sb.Append(c);
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        void Run()
+        {
+            while (!_disposed)
+            {
+                NamedPipeClientStream p = null;
+                try
+                {
+                    p = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                    p.Connect(2000);
+                    lock (_lock)
+                    {
+                        if (_disposed) return;
+                        _pipe = p;
+                        _connected = true;
+                    }
+                    ReadLoop(p);
+                }
+                catch { }
+                finally
+                {
+                    lock (_lock)
+                    {
+                        _connected = false;
+                        if (_pipe == p) _pipe = null;
+                    }
+                    if (p != null) { try { p.Dispose(); } catch { } }
+                }
+                if (_disposed) return;
+                _stop.WaitOne(5000);
+            }
+        }
+
+        void ReadLoop(NamedPipeClientStream p)
+        {
+            byte[] buf = new byte[1024];
+            byte[] line = new byte[MaxLine];
+            int len = 0;
+            bool discarding = false;
+            while (!_disposed)
+            {
+                Task<int> rt = p.ReadAsync(buf, 0, buf.Length);
+                while (!rt.Wait(200))
+                {
+                    if (_disposed) return;
+                }
+                int n = rt.Result;
+                if (n <= 0) return;
+                for (int i = 0; i < n; i++)
+                {
+                    byte b = buf[i];
+                    if (b == (byte)'\n')
+                    {
+                        if (!discarding && len > 0) HandleLine(Encoding.UTF8.GetString(line, 0, len));
+                        len = 0;
+                        discarding = false;
+                    }
+                    else if (!discarding)
+                    {
+                        if (len >= MaxLine) { discarding = true; len = 0; }
+                        else line[len++] = b;
+                    }
+                }
+            }
+        }
+
+        void HandleLine(string text)
+        {
+            try
+            {
+                Dictionary<string, string> top = ParseTopLevel(text);
+                if (top == null) return;
+                string type;
+                if (!top.TryGetValue("type", out type)) return;
+                if (type == "ask")
+                {
+                    lock (_lock)
+                    {
+                        while (_asks.Count >= MaxQueue) _asks.Dequeue();
+                        _asks.Enqueue(text);
+                    }
+                }
+                else if (type == "status")
+                {
+                    string v;
+                    if (top.TryGetValue("sysmon", out v)) _sysmonOk = (v == "true");
+                    if (top.TryGetValue("preexisting", out v)) _sysmonPre = (v == "true");
+                }
+            }
+            catch { }
+        }
+
+        // Tek bir JSON nesnesinin ust duzey alanlarini okur. Metin degerleri cozulur,
+        // true/false/sayi ham metin olarak doner; ic ice dizi/nesneler atlanir.
+        // Gecersizse null doner.
+        static Dictionary<string, string> ParseTopLevel(string s)
+        {
+            Dictionary<string, string> r = new Dictionary<string, string>();
+            int i = 0;
+            SkipWs(s, ref i);
+            if (i >= s.Length || s[i] != '{') return null;
+            i++;
+            SkipWs(s, ref i);
+            if (i < s.Length && s[i] == '}') return r;
+            while (true)
+            {
+                SkipWs(s, ref i);
+                string key = ReadString(s, ref i);
+                if (key == null) return null;
+                SkipWs(s, ref i);
+                if (i >= s.Length || s[i] != ':') return null;
+                i++;
+                SkipWs(s, ref i);
+                if (i >= s.Length) return null;
+                string val;
+                if (s[i] == '"')
+                {
+                    val = ReadString(s, ref i);
+                    if (val == null) return null;
+                }
+                else if (s[i] == '{' || s[i] == '[')
+                {
+                    if (!SkipNested(s, ref i)) return null;
+                    val = null;
+                }
+                else
+                {
+                    int st = i;
+                    while (i < s.Length && s[i] != ',' && s[i] != '}' && !char.IsWhiteSpace(s[i])) i++;
+                    val = s.Substring(st, i - st);
+                }
+                if (val != null && !r.ContainsKey(key)) r[key] = val;
+                SkipWs(s, ref i);
+                if (i >= s.Length) return null;
+                if (s[i] == ',') { i++; continue; }
+                if (s[i] == '}') return r;
+                return null;
+            }
+        }
+
+        static void SkipWs(string s, ref int i)
+        {
+            while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
+        }
+
+        // s[i] == '"' olmali; kapanis tirnagindan sonrasina ilerler. Hata: null.
+        static string ReadString(string s, ref int i)
+        {
+            if (i >= s.Length || s[i] != '"') return null;
+            i++;
+            StringBuilder sb = new StringBuilder();
+            while (i < s.Length)
+            {
+                char c = s[i++];
+                if (c == '"') return sb.ToString();
+                if (c != '\\') { sb.Append(c); continue; }
+                if (i >= s.Length) return null;
+                char e = s[i++];
+                switch (e)
+                {
+                    case '"': sb.Append('"'); break;
+                    case '\\': sb.Append('\\'); break;
+                    case '/': sb.Append('/'); break;
+                    case 'b': sb.Append('\b'); break;
+                    case 'f': sb.Append('\f'); break;
+                    case 'n': sb.Append('\n'); break;
+                    case 'r': sb.Append('\r'); break;
+                    case 't': sb.Append('\t'); break;
+                    case 'u':
+                        if (i + 4 > s.Length) return null;
+                        int code;
+                        if (!int.TryParse(s.Substring(i, 4), System.Globalization.NumberStyles.HexNumber,
+                            System.Globalization.CultureInfo.InvariantCulture, out code)) return null;
+                        sb.Append((char)code);
+                        i += 4;
+                        break;
+                    default: return null;
+                }
+            }
+            return null;
+        }
+
+        // s[i] '{' veya '[' ; eslesen kapanisin sonrasina ilerler (metinleri hesaba katar).
+        static bool SkipNested(string s, ref int i)
+        {
+            int depth = 0;
+            while (i < s.Length)
+            {
+                char c = s[i];
+                if (c == '"')
+                {
+                    if (ReadString(s, ref i) == null) return false;
+                    continue;
+                }
+                if (c == '{' || c == '[') depth++;
+                else if (c == '}' || c == ']')
+                {
+                    depth--;
+                    if (depth == 0) { i++; return true; }
+                }
+                i++;
+            }
+            return false;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try { _stop.Set(); } catch { }
+            lock (_lock)
+            {
+                _connected = false;
+                NamedPipeClientStream p = _pipe;
+                _pipe = null;
+                if (p != null) { try { p.Dispose(); } catch { } }
+            }
+            try { if (_thread != Thread.CurrentThread) _thread.Join(2000); } catch { }
         }
     }
 }

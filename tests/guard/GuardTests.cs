@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using Cortmed;
 using Cortmed.Guard;
 
 [AttributeUsage(AttributeTargets.Method)]
@@ -521,6 +522,115 @@ public static class GuardTests
 
         var r3 = new SysmonReader(ev => { throw new InvalidOperationException("x"); }, s => { throw new Exception("y"); });
         r3.HandleXml(ok);
+    }
+
+    // ---- pipe ----
+
+    static bool WaitFor(Func<bool> cond, int ms = 5000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < ms)
+        {
+            if (cond()) return true;
+            System.Threading.Thread.Sleep(20);
+        }
+        return cond();
+    }
+
+    [Test]
+    static void PromptRoundTripsThroughPipe()
+    {
+        string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        var answers = new List<string>();
+        using (var server = new GuardPipe(name, (id, d) => { lock (answers) answers.Add(id + "|" + d); return true; }))
+        {
+            server.Start();
+            Assert(!server.HasClient, "istemci yokken HasClient false olmali");
+            server.SendPrompt(new Prompt { Id = "dropped" }); // istemci yok: sessizce atilir
+            server.SendStatus(true, false);
+
+            using (var client = new GuardClient(name))
+            {
+                Assert(WaitFor(() => client.Connected), "istemci baglanmali");
+                Assert(WaitFor(() => server.HasClient), "sunucu istemciyi gormeli");
+
+                var p = new Prompt
+                {
+                    Id = "id1", Program = "evil \"x\".exe", Path = @"C:\Users\a\evil.exe",
+                    Publisher = "", Score = 77, Reasons = new List<string> { "r1", "r2" }
+                };
+                server.SendPrompt(p);
+                string json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "ask istemciye ulasmali");
+                Assert(json.Contains("\"id1\"") && json.Contains("\"ask\"") && json.Contains("77") && json.Contains("r2"), "ask icerigi: " + json);
+                Assert(!json.Contains("dropped"), "istemci yokken gonderilen atilmali");
+
+                server.SendStatus(true, true);
+                Assert(WaitFor(() => client.SysmonOk && client.SysmonPreexisting), "status istemciye yansimali");
+                server.SendStatus(false, false);
+                Assert(WaitFor(() => !client.SysmonOk && !client.SysmonPreexisting), "status guncellenmeli");
+
+                client.Answer("id1", "kill");
+                Assert(WaitFor(() => { lock (answers) return answers.Contains("id1|kill"); }), "cevap sunucuya ulasmali");
+            }
+            Assert(WaitFor(() => !server.HasClient), "istemci kapaninca HasClient false olmali");
+
+            // ikinci istemci kabul edilmeli
+            using (var client2 = new GuardClient(name))
+            {
+                Assert(WaitFor(() => client2.Connected && server.HasClient, 12000), "ikinci istemci baglanmali");
+                client2.Answer("id2", "allow");
+                Assert(WaitFor(() => { lock (answers) return answers.Contains("id2|allow"); }), "ikinci istemcinin cevabi");
+            }
+        }
+        // bagli degilken Answer sessiz olmali
+        var lone = new GuardClient("CortmedGuardTest-" + Guid.NewGuid().ToString("N"));
+        lone.Answer("x", "kill");
+        lone.Dispose();
+    }
+
+    [Test]
+    static void RejectsUnknownIdOversizedAndMalformed()
+    {
+        string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        var calls = new List<string>();
+        using (var server = new GuardPipe(name, (id, d) =>
+        {
+            lock (calls) calls.Add(id + "|" + d);
+            return id == "known";
+        }))
+        {
+            server.Start();
+            using (var raw = new System.IO.Pipes.NamedPipeClientStream(".", name, System.IO.Pipes.PipeDirection.InOut))
+            {
+                raw.Connect(5000);
+                Action<string> send = s =>
+                {
+                    byte[] b = new UTF8Encoding(false).GetBytes(s);
+                    raw.Write(b, 0, b.Length);
+                    raw.Flush();
+                };
+                send("{bozuk\n");
+                send(new string('a', 5000) + "\n");
+                send("{\"type\":\"answer\",\"id\":\"known\",\"decision\":\"kill\",\"pad\":\"" + new string('b', 5000) + "\"}\n");
+                send("{\"type\":\"other\",\"id\":\"bad1\",\"decision\":\"kill\"}\n");
+                send("{\"type\":\"answer\",\"id\":\"bad2\",\"decision\":\"KILL\"}\n");
+                send("{\"type\":\"answer\",\"id\":\"bad3\",\"decision\":\"delete\"}\n");
+                send("{\"type\":\"answer\",\"id\":5,\"decision\":\"kill\"}\n");
+                send("{\"type\":\"answer\",\"decision\":\"kill\"}\n");
+                send("[1,2]\n");
+                send("\n");
+                send("{\"type\":\"answer\",\"id\":\"nope\",\"decision\":\"allow\"}\n");
+                send("{\"type\":\"answer\",\"id\":\"known\",\"decision\":\"allow\"}\n");
+
+                Assert(WaitFor(() => { lock (calls) return calls.Contains("known|allow"); }), "gecerli cevap sonunda islenmeli");
+                lock (calls)
+                {
+                    Assert(calls.Contains("nope|allow"), "bilinmeyen id onAnswer'a iletilir (false doner)");
+                    Assert(calls.Count == 2, "gecersiz satirlar onAnswer'a ulasmamali: " + string.Join(",", calls.ToArray()));
+                }
+            }
+        }
     }
 
     // ---- calistirici ----
