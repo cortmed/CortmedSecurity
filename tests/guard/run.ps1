@@ -163,8 +163,8 @@ Check 'Install-Guard -WhatIf: kaldirma betigi Program Files''a kopyalanir' ($rAb
 $after = DirState
 Check 'Install-Guard -WhatIf hicbir sey olusturmaz' ($before -eq $after) "once: $before / sonra: $after"
 
-# Guvenilir klasor denetimi ve baglanti izlemeyen silme: iki betikteki kopyalar ayni, ve gecici klasorde davranis
-$fnNames = 'Test-TrustedDir', 'Remove-TreeSafe', 'Remove-EntrySafe'
+# Klasor guveni (tutamac tabanli) ve kenara alma: iki betikteki kopyalar ayni, ve gecici klasorde davranis
+$fnNames = 'Add-DirTrustType', 'Open-TrustedDir', 'Move-Aside'
 function FnTexts([string]$path) {
     $h = @{}
     if (-not (Test-Path $path)) { return $h }
@@ -181,40 +181,59 @@ foreach ($n in $fnNames) {
     Check "$n iki betikte de var ve ayni" ($igFns.ContainsKey($n) -and $ugFns.ContainsKey($n) -and $igFns[$n] -eq $ugFns[$n]) ''
     if ($igFns.ContainsKey($n)) { . ([ScriptBlock]::Create($igFns[$n])) }
 }
-if ($fnNames | Where-Object { -not $igFns.ContainsKey($_) }) {
-    Check 'guven/silme fonksiyonlari yuklendi' $false ''
-} else {
+$loaded = $false
+if (-not ($fnNames | Where-Object { -not $igFns.ContainsKey($_) })) {
+    try { Add-DirTrustType; $loaded = $true } catch { Write-Host "  Add-DirTrustType: $($_.Exception.Message)" }
+}
+Check 'guven yardimcisi (C#) derlendi' $loaded ''
+if ($loaded) {
+    function TrustWhy([string]$p) { $w = $null; $h = [CortmedSetup.DirTrust]::OpenTrusted($p, [ref]$w); if ($h) { $h.Dispose(); return $null }; return $w }
+    function SdWhy([string]$sddl) { [CortmedSetup.DirTrust]::CheckDescriptor((New-Object Security.AccessControl.RawSecurityDescriptor $sddl)) }
+    # Kural mantigi (SDDL ile): kurulumun verdigi ACL gecer, sapmalar gecmez
+    $good = 'O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'
+    Check 'CheckDescriptor: kurulum ACL''si guvenilir' ($null -eq (SdWhy $good)) (SdWhy $good)
+    Check 'CheckDescriptor: SYSTEM sahibi guvenilir' ($null -eq (SdWhy ($good -replace '^O:BA', 'O:SY'))) ''
+    Check 'CheckDescriptor: kullanici sahibi guvenilmez' ($null -ne (SdWhy ($good -replace '^O:BA', 'O:BU'))) ''
+    Check 'CheckDescriptor: korumasiz DACL guvenilmez' ($null -ne (SdWhy ($good -replace 'D:PAI', 'D:AI'))) ''
+    Check 'CheckDescriptor: Users yazma guvenilmez' ($null -ne (SdWhy ($good -replace '0x1200a9;;;BU', '0x1301bf;;;BU'))) ''
+    Check 'CheckDescriptor: CREATOR OWNER genel yazma guvenilmez' ($null -ne (SdWhy ($good + '(A;OICIIO;GW;;;CO)'))) ''
+    Check 'CheckDescriptor: Everyone WRITE_DAC guvenilmez' ($null -ne (SdWhy ($good + '(A;;WD;;;WD)'))) ''
+    Check 'CheckDescriptor: DACL yok guvenilmez' ($null -ne (SdWhy 'O:BAG:SY')) ''
+
     $tt = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-trust-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force $tt | Out-Null
     try {
         $userDir = Join-Path $tt 'userdir'
         New-Item -ItemType Directory $userDir | Out-Null
-        Check 'Test-TrustedDir: kullanicinin actigi klasor guvenilmez' (-not (Test-TrustedDir $userDir)) ''
-        Check 'Test-TrustedDir: olmayan klasor guvenilmez' (-not (Test-TrustedDir (Join-Path $tt 'yok'))) ''
+        Check 'OpenTrusted: kullanicinin actigi klasor guvenilmez' ($null -ne (TrustWhy $userDir)) ''
+        Check 'OpenTrusted: olmayan klasor guvenilmez' ($null -ne (TrustWhy (Join-Path $tt 'yok'))) ''
+        # Gercek olumlu ornek: SYSTEM/Administrators sahipli, korumali, kullanicilar yalnizca okur
+        $gp = Join-Path ([Environment]::SystemDirectory) 'GroupPolicy'
+        $gpOk = (Test-Path $gp) -and ($null -eq (TrustWhy $gp))
+        if (Test-Path $gp) { Check 'OpenTrusted: System32\GroupPolicy guvenilir (olumlu ornek)' $gpOk (TrustWhy $gp) }
+        else { Write-Host 'SKIP olumlu ornek (System32\GroupPolicy yok)' }
+        $jTarget = if ($gpOk) { $gp } else { $userDir }
+        $jtop = Join-Path $tt 'jtop'
+        cmd /c mklink /J "$jtop" "$jTarget" | Out-Null
+        Check "OpenTrusted: guvenilir hedefe junction guvenilmez ($jTarget)" ((Test-Path $jtop) -and ($null -ne (TrustWhy $jtop))) (TrustWhy $jtop)
+
+        # Kenara alma: icinde junction olan klasor tek yeniden adlandirmayla tasinir, hedefe dokunulmaz
         $target = Join-Path $tt 'target'
         New-Item -ItemType Directory $target | Out-Null
         'keep' | Set-Content (Join-Path $target 'keep.txt')
-        'hard' | Set-Content (Join-Path $target 'hard.txt')
-        $jtop = Join-Path $tt 'jtop'
-        cmd /c mklink /J "$jtop" "$target" | Out-Null
-        Check 'Test-TrustedDir: junction guvenilmez' (-not (Test-TrustedDir $jtop)) ''
-        $victim = Join-Path $tt 'victim'
-        New-Item -ItemType Directory (Join-Path $victim 'sub') | Out-Null
-        'a' | Set-Content (Join-Path $victim 'a.txt')
-        'b' | Set-Content (Join-Path $victim 'sub\b.txt')
+        $victim = Join-Path $tt 'Cortmed'
+        New-Item -ItemType Directory $victim | Out-Null
+        'a' | Set-Content (Join-Path $victim 'sysmon-installed-by-cortmed')
         cmd /c mklink /J "$(Join-Path $victim 'link')" "$target" | Out-Null
-        cmd /c mklink /J "$(Join-Path $victim 'sub\link2')" "$target" | Out-Null
-        cmd /c mklink /H "$(Join-Path $victim 'hl.txt')" "$(Join-Path $target 'hard.txt')" | Out-Null
-        $planted = (Test-Path (Join-Path $victim 'link\keep.txt')) -and (Test-Path (Join-Path $victim 'hl.txt'))
-        Check 'silme testi: junction ve hardlink kuruldu' $planted ''
+        $aside = $null; $err = ''
+        try { $aside = Move-Aside $victim } catch { $err = $_.Exception.Message }
+        Check 'Move-Aside: ozgun ad bosaldi' (-not (Test-Path $victim)) $err
+        Check 'Move-Aside: .untrusted-<zaman> adiyla tasindi' ($aside -and $aside -like "$victim.untrusted-*" -and (Test-Path (Join-Path $aside 'sysmon-installed-by-cortmed'))) "$aside"
+        Check 'Move-Aside: junction hedefine dokunulmadi' ((Test-Path (Join-Path $target 'keep.txt')) -and (Test-Path (Join-Path $aside 'link\keep.txt'))) ''
         $err = ''
-        try { Remove-TreeSafe $victim } catch { $err = $_.Exception.Message }
-        Check 'Remove-TreeSafe klasoru siler' (-not (Test-Path $victim)) $err
-        Check 'Remove-TreeSafe junction hedefine dokunmaz' ((Test-Path (Join-Path $target 'keep.txt')) -and (Test-Path $target)) ''
-        Check 'Remove-TreeSafe hardlink hedefini silmez' ((Test-Path (Join-Path $target 'hard.txt')) -and ((Get-Content (Join-Path $target 'hard.txt')) -eq 'hard')) ''
-        $err = ''
-        try { Remove-TreeSafe $jtop } catch { $err = $_.Exception.Message }
-        Check 'Remove-TreeSafe ust duzey junction: yalnizca bag silinir' ((-not (Test-Path $jtop)) -and (Test-Path (Join-Path $target 'keep.txt'))) $err
+        $aside2 = $null
+        try { $aside2 = Move-Aside $jtop } catch { $err = $_.Exception.Message }
+        Check 'Move-Aside: ust duzey junction''in kendisi tasinir, hedef yerinde' ((-not (Test-Path $jtop)) -and (Test-Path $jTarget) -and $aside2 -and (Test-Path $aside2)) $err
 
         # Guvenilmeyen veri klasorundeki isarete inanilmaz (-WhatIf, test veri klasoru)
         $fakeData = Join-Path $tt 'data'
@@ -225,21 +244,26 @@ if ($fnNames | Where-Object { -not $igFns.ContainsKey($_) }) {
             $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ig -Source (Join-Path $root 'windows') -WhatIf -SysmonState Present -DataDir $fakeData | Out-String
         }
         Check 'WhatIf: guvenilmeyen klasordeki isaret yok sayilir' ($o -match ('Sysmon ' + [char]0xF6 + 'nceden kurulu, dokunulmayacak') -and $o -notmatch 'Cortmed taraf') $o
-        Check 'WhatIf: guvenilmeyen veri klasoru yeniden olusturulacak' ($o -match [regex]::Escape($fakeData) -and $o -match 'yeniden olu') $o
-        Check 'WhatIf: isaret dosyasina dokunulmadi' (Test-Path (Join-Path $fakeData 'sysmon-installed-by-cortmed')) ''
+        Check 'WhatIf: guvenilmeyen veri klasoru kenara alinip yeniden olusturulacak' ($o -match [regex]::Escape($fakeData) -and $o -match 'untrusted-' -and $o -match 'yeniden olu') $o
+        Check 'WhatIf: test veri klasorune dokunulmadi' ((Test-Path (Join-Path $fakeData 'sysmon-installed-by-cortmed')) -and @(Get-ChildItem $tt -Filter 'data.untrusted-*').Count -eq 0) ''
     } finally {
-        Get-ChildItem $tt -Force -ErrorAction SilentlyContinue | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
-            ForEach-Object { cmd /c rmdir "$($_.FullName)" }
+        # Once bilinen baglantilari (yalnizca bagin kendisi, ozyineleme yok) kaldir, sonra agaci sil
+        $links = @($jtop, $aside2, (Join-Path $tt 'Cortmed\link'))
+        if ($aside) { $links += (Join-Path $aside 'link') }
+        foreach ($l in $links) {
+            if ($l -and ((Get-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue).Attributes -band [IO.FileAttributes]::ReparsePoint)) { cmd /c rmdir "$l" }
+        }
         cmd /c rmdir /s /q "$tt"
     }
 }
 
-# Yukseltilmis betikler: ortam degiskeni yolu yok, Remove-Item -Recurse yok, imzalayan tam eslesme
+# Yukseltilmis betikler: ortam degiskeni yolu yok, Remove-Item -Recurse yok, ozyinelemeli yonetici silmesi yok, imzalayan tam eslesme
 foreach ($s in $ig, $ug) {
     $txt = if (Test-Path $s) { Get-Content $s -Raw -Encoding UTF8 } else { '$env:' }
     $leaf = Split-Path $s -Leaf
     Check "$leaf ortam degiskeninden yol almaz" ($txt -notmatch '\$env:') ''
     Check "$leaf Remove-Item -Recurse kullanmaz" ($txt -notmatch 'Remove-Item[^\r\n]*-Recurse') ''
+    Check "$leaf kullanici icerigi uzerinde ozyinelemeli silme yok" ($txt -notmatch 'Remove-TreeSafe|Remove-EntrySafe|GetFileSystemInfos') ''
 }
 $igTxt = if (Test-Path $ig) { Get-Content $ig -Raw -Encoding UTF8 } else { '' }
 Check 'Install-Guard imzalayan tam eslesme' ($igTxt -match 'GetNameInfo' -and $igTxt -match "-ne 'Microsoft Corporation'" -and $igTxt -notmatch '-like[^\r\n]*Microsoft') ''

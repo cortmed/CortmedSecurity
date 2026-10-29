@@ -2,7 +2,8 @@
 <#
   Cortmed Security - davranis bekcisi kurulumu (yonetici yetkisi ister, bir kez)
     * C:\Program Files\Cortmed ve C:\ProgramData\Cortmed: korumali ACL (kullanicilar yalnizca okur).
-      Onceden var olan ama guvenilir durumda olmayan klasor (or. bir kullanicinin actigi) silinip yeniden olusturulur.
+      Onceden var olan ama guvenilir durumda olmayan klasor (or. bir kullanicinin actigi) SILINMEZ:
+      tek bir yeniden adlandirmayla "<ad>.untrusted-<zaman>" olarak kenara alinir, icine dokunulmaz.
     * Bekci kaynaklarini Program Files'a kopyalar ve CortmedGuard.exe'yi ORADA derler
     * Davranis kurallarini ve Sysmon ayarini ProgramData'ya kopyalar
     * Sysmon yoksa Microsoft'un resmi zip'ini indirir, imzasini dogrular ve kurar
@@ -32,51 +33,133 @@ if ($WhatIf -and $DataDir) { $data = $DataDir }
 $exe = Join-Path $app 'CortmedGuard.exe'
 $svcName = 'CortmedGuard'
 $sc = Join-Path $sysDir 'sc.exe'
+$cmd = Join-Path $sysDir 'cmd.exe'
 $sysmonUrl = 'https://download.sysinternals.com/files/Sysmon.zip'
 $markOurs = Join-Path $data 'sysmon-installed-by-cortmed'
 $markPre = Join-Path $data 'sysmon-preexisting'
 
-# --- Guvenilir klasor denetimi. AYNI fonksiyon Uninstall-Guard.ps1'de de var (ayri dosya yerine kopya;
+# --- Klasor guveni. AYNI uc fonksiyon Uninstall-Guard.ps1'de de var (ayri dosya yerine kopya;
 #     test ikisinin ayni oldugunu denetler). Degistirirseniz ikisini birlikte degistirin. ---
-# Guvenilir: var, baglanti (reparse point) degil, sahibi Administrators veya SYSTEM, DACL korumali
-# ve SYSTEM/Administrators disinda hicbir SID'e yazma izni yok.
-function Test-TrustedDir([string]$dir) {
-    try {
-        $di = New-Object IO.DirectoryInfo $dir
-        if (-not $di.Exists) { return $false }
-        if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
-        $acl = $di.GetAccessControl()
-        $okSids = @('S-1-5-18', 'S-1-5-32-544')
-        if ($okSids -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { return $false }
-        if (-not $acl.AreAccessRulesProtected) { return $false }
-        # Yazma sayilan haklar: veri/ek yazma, oznitelik, silme, izin ve sahiplik degistirme, genel yazma/tum
-        $write = [int64]([Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x50000000
-        foreach ($r in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-            if ($r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
-            if ($okSids -contains $r.IdentityReference.Value) { continue }
-            if (([int64]$r.FileSystemRights -band $write) -ne 0) { return $false }
+# Guvenilir: dizin, baglanti (reparse point) degil, sahibi SYSTEM veya Administrators, DACL korumali
+# ve SYSTEM/Administrators disinda hicbir SID'e yazma izni yok. Hepsi TEK bir tutamactan okunur;
+# tutamac FILE_SHARE_DELETE vermeden acik tutuldugu surece klasor yeniden adlandirilamaz/degistirilemez.
+function Add-DirTrustType {
+    if ('CortmedSetup.DirTrust' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using Microsoft.Win32.SafeHandles;
+
+namespace CortmedSetup
+{
+    public static class DirTrust
+    {
+        const uint READ_CONTROL = 0x00020000, FILE_READ_ATTRIBUTES = 0x80;
+        const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, OPEN_EXISTING = 3;
+        const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000, FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+        const uint ATTR_DIRECTORY = 0x10, ATTR_REPARSE = 0x400;
+        const uint OWNER_SECURITY_INFORMATION = 1, DACL_SECURITY_INFORMATION = 4;
+        const int SE_FILE_OBJECT = 1;
+        // Yazma sayilan haklar: veri/ek yazma, EA, alt silme, oznitelik, silme, izin/sahip degistirme, genel yazma/tum, azami
+        const int WriteMask = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000 | 0x02000000;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct FileInfo
+        {
+            public uint Attributes;
+            public uint C1, C2, A1, A2, W1, W2;
+            public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
         }
-        return $true
-    } catch { return $false }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetFileInformationByHandle(SafeFileHandle h, out FileInfo info);
+        [DllImport("advapi32.dll")]
+        static extern uint GetSecurityInfo(SafeFileHandle h, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr sd);
+        [DllImport("advapi32.dll")]
+        static extern uint GetSecurityDescriptorLength(IntPtr sd);
+        [DllImport("kernel32.dll")]
+        static extern IntPtr LocalFree(IntPtr p);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool MoveFileExW(string from, string to, uint flags);
+
+        static bool OkSid(string s) { return s == "S-1-5-18" || s == "S-1-5-32-544"; }
+
+        // null: guvenilir; aksi halde neden.
+        public static string CheckDescriptor(RawSecurityDescriptor sd)
+        {
+            if (sd.Owner == null || !OkSid(sd.Owner.Value)) return "sahip SYSTEM/Administrators degil";
+            if ((sd.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0) return "DACL korumali degil";
+            if ((sd.ControlFlags & ControlFlags.DiscretionaryAclPresent) == 0 || sd.DiscretionaryAcl == null) return "DACL yok";
+            foreach (GenericAce ace in sd.DiscretionaryAcl)
+            {
+                AceType t = ace.AceType;
+                bool allow = t == AceType.AccessAllowed || t == AceType.AccessAllowedObject || t == AceType.AccessAllowedCallback
+                    || t == AceType.AccessAllowedCallbackObject || t == AceType.AccessAllowedCompound;
+                if (!allow) continue;
+                KnownAce k = ace as KnownAce;
+                if (k == null) return "taninmayan izin girdisi";
+                if (OkSid(k.SecurityIdentifier.Value)) continue;
+                if ((k.AccessMask & WriteMask) != 0) return k.SecurityIdentifier.Value + " yazabiliyor";
+            }
+            return null;
+        }
+
+        // Guvenilirse acik tutamac (cagiran kapatir), degilse null ve neden.
+        public static SafeFileHandle OpenTrusted(string path, out string reason)
+        {
+            SafeFileHandle h = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero,
+                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+            if (h.IsInvalid) { reason = "acilamadi (" + Marshal.GetLastWin32Error() + ")"; h.Dispose(); return null; }
+            reason = Check(h);
+            if (reason == null) return h;
+            h.Dispose();
+            return null;
+        }
+
+        static string Check(SafeFileHandle h)
+        {
+            FileInfo fi;
+            if (!GetFileInformationByHandle(h, out fi)) return "oznitelik okunamadi";
+            if ((fi.Attributes & ATTR_DIRECTORY) == 0) return "dizin degil";
+            if ((fi.Attributes & ATTR_REPARSE) != 0) return "baglanti (reparse point)";
+            IntPtr owner, group, dacl, sacl, sd;
+            uint rc = GetSecurityInfo(h, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                out owner, out group, out dacl, out sacl, out sd);
+            if (rc != 0) return "guvenlik bilgisi okunamadi (" + rc + ")";
+            try
+            {
+                byte[] bin = new byte[GetSecurityDescriptorLength(sd)];
+                Marshal.Copy(sd, bin, 0, bin.Length);
+                return CheckDescriptor(new RawSecurityDescriptor(bin, 0));
+            }
+            finally { LocalFree(sd); }
+        }
+
+        // Girdinin kendisini yeniden adlandirir (baglanti izlenmez, icerige girilmez).
+        public static void MoveAside(string from, string to)
+        {
+            if (!MoveFileExW(from, to, 0)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+    }
+}
+'@
 }
 
-# Baglantilari izlemeden siler: junction/symlink girdisinin kendisi silinir, hedefe hic girilmez.
-# Dosyalar (hardlink dahil) yeniden izinlendirilmez, yalnizca silinir (hardlink'te yalnizca bag kopar).
-function Remove-TreeSafe([string]$path) {
-    $di = New-Object IO.DirectoryInfo $path
-    if ($di.Exists) { Remove-EntrySafe $di }
-    elseif ((New-Object IO.FileInfo $path).Exists) { [IO.File]::Delete($path) }
+function Open-TrustedDir([string]$dir) {
+    $why = $null
+    $h = [CortmedSetup.DirTrust]::OpenTrusted($dir, [ref]$why)
+    if ($h) { return $h }
+    return $null
 }
-# $e: listelemeden gelen girdi; oznitelikleri baglantinin kendisine aittir (hedefe bakilmaz)
-function Remove-EntrySafe([IO.FileSystemInfo]$e) {
-    if ($e -is [IO.DirectoryInfo]) {
-        if (-not ($e.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            foreach ($c in $e.GetFileSystemInfos()) { Remove-EntrySafe $c }
-        }
-        [IO.Directory]::Delete($e.FullName, $false)
-    } else {
-        [IO.File]::Delete($e.FullName)
-    }
+
+# Guvenilmeyen girdiyi tek yeniden adlandirmayla kenara alir; yeni adi dondurur.
+function Move-Aside([string]$dir) {
+    $to = '{0}.untrusted-{1}' -f $dir, (Get-Date -Format 'yyyyMMddHHmmss')
+    [CortmedSetup.DirTrust]::MoveAside($dir, $to)
+    return $to
 }
 # --- /kopya ---
 
@@ -101,11 +184,27 @@ if (-not $rules) { $missing += 'behavior_rules.json' }
 if (-not (Test-Path $uninstaller)) { $missing += 'Uninstall-Guard.ps1' }
 if ($missing) { throw "Davranış bekçisi dosyaları bulunamadı: $($missing -join ', ')" }
 
-# Klasorlerin bu calismanin BASINDAKI durumu. Isaretlere yalnizca veri klasoru guvenilirse inanilir;
-# degilse klasor silinip yeniden olusturulur ve isaretler de gider.
-$appTrusted = Test-TrustedDir $app
-$dataTrusted = Test-TrustedDir $data
-$oursMarked = $dataTrusted -and (Test-Path -LiteralPath $markOurs)
+# Yonetici degilse ya da 64 bit Windows'ta 32 bit PowerShell ise (Program Files x86 olur) 64 bit PowerShell'i
+# yonetici olarak yeniden baslat, profil yuklenmeden. UAC reddedilirse Start-Process istisna firlatir (cagirana gider).
+if (-not $WhatIf) {
+    $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $wow = [Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess
+    if (-not $isAdmin -or $wow) {
+        $psDir = if ($wow) { Join-Path $winDir 'Sysnative' } else { $sysDir }
+        $ps = Join-Path $psDir 'WindowsPowerShell\v1.0\powershell.exe'
+        $argLine = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Source "{1}" -Elevated' -f $PSCommandPath, $Source
+        $p = Start-Process $ps -Verb RunAs -ArgumentList $argLine -Wait -PassThru -ErrorAction Stop
+        exit $p.ExitCode
+    }
+}
+
+# Klasorlerin bu calismanin BASINDAKI durumu, tutamaclar calisma boyunca acik kalir. Isaretler yalnizca
+# veri klasoru guvenilirse ve tutamac tutulurken okunur; guvenilmeyen klasor kenara alinir, isaretleri sayilmaz.
+Add-DirTrustType
+$appH = Open-TrustedDir $app
+$dataH = Open-TrustedDir $data
+$oursMarked = $dataH -and (Test-Path -LiteralPath $markOurs)
 if ($WhatIf -and $SysmonState -ne 'Auto') {
     $sysmonPresent = ($SysmonState -eq 'Present')
 } else {
@@ -115,17 +214,18 @@ if ($WhatIf -and $SysmonState -ne 'Auto') {
 $sysmonOurs = $sysmonPresent -and $oursMarked
 $guardExists = [bool](Get-Service $svcName -ErrorAction SilentlyContinue)
 
-function DirStep([string]$dir, [bool]$trusted) {
-    if ($trusted) { "$dir korunuyor (zaten yalnızca yöneticiler yazabiliyor)" }
-    elseif (Test-Path -LiteralPath $dir) { "$dir güvenilir durumda değil: içeriği silinip yalnızca yöneticilerin yazabileceği şekilde yeniden oluşturulacak" }
+function Test-Entry([string]$p) { (New-Object IO.DirectoryInfo $p).Exists -or (New-Object IO.FileInfo $p).Exists }
+function DirStep([string]$dir, $handle) {
+    if ($handle) { "$dir korunuyor (zaten yalnızca yöneticiler yazabiliyor)" }
+    elseif (Test-Entry $dir) { "$dir güvenilir durumda değil: içine dokunulmadan '$dir.untrusted-<zaman>' adıyla kenara alınacak ve yalnızca yöneticilerin yazabileceği şekilde yeniden oluşturulacak" }
     else { "$dir oluşturulacak; yalnızca yöneticiler ve sistem yazabilecek, kullanıcılar yalnızca okuyabilecek" }
 }
 $sysmonStep = if (-not $sysmonPresent) { "Sysmon kurulacak (Microsoft'un resmi Sysmon.zip dosyası indirilip imzası doğrulanacak)" }
 elseif ($sysmonOurs) { 'Sysmon daha önce Cortmed tarafından kurulmuş; yalnızca ayarı güncellenecek' }
 else { 'Sysmon önceden kurulu, dokunulmayacak' }
 $plan = @(
-    (DirStep $app $appTrusted),
-    (DirStep $data $dataTrusted),
+    (DirStep $app $appH),
+    (DirStep $data $dataH),
     "Bekçi kaynakları $app\src klasörüne kopyalanıp orada CortmedGuard.exe olarak derlenecek",
     "Kaldırma betiği $app\Uninstall-Guard.ps1 olarak kopyalanacak",
     "Davranış kuralları ve Sysmon ayarı $data klasörüne kopyalanacak",
@@ -134,22 +234,11 @@ $plan = @(
         else { 'CortmedGuard hizmeti kurulacak (her açılışta başlar, çökerse yeniden başlar) ve başlatılacak' }))
 
 if ($WhatIf) {
+    if ($appH) { $appH.Dispose() }
+    if ($dataH) { $dataH.Dispose() }
     Write-Host '  Davranış bekçisi kurulum planı (-WhatIf: hiçbir şey değiştirilmedi):'
     foreach ($s in $plan) { Write-Host "   - $s" }
     exit 0
-}
-
-# Yonetici degilse ya da 64 bit Windows'ta 32 bit PowerShell ise (Program Files x86 olur) 64 bit PowerShell'i
-# yonetici olarak yeniden baslat, profil yuklenmeden. UAC reddedilirse Start-Process istisna firlatir (cagirana gider).
-$me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-$isAdmin = $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$wow = [Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess
-if (-not $isAdmin -or $wow) {
-    $psDir = if ($wow) { Join-Path $winDir 'Sysnative' } else { $sysDir }
-    $ps = Join-Path $psDir 'WindowsPowerShell\v1.0\powershell.exe'
-    $argLine = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Source "{1}" -Elevated' -f $PSCommandPath, $Source
-    $p = Start-Process $ps -Verb RunAs -ArgumentList $argLine -Wait -PassThru -ErrorAction Stop
-    exit $p.ExitCode
 }
 
 $admins = New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
@@ -168,17 +257,26 @@ function New-ProtectedAcl {
     $ds
 }
 
-# Guvenilir klasor (yukseltme) oldugu gibi kalir. Degilse: baglantilari izlemeden silinir, sonra ACL'si
-# olusturma aninda verilerek (arada acik pencere yok) yeniden yaratilir ve dogrulanir.
-function Initialize-SecureDir([string]$dir, [bool]$trusted) {
-    if ($trusted -and (Test-TrustedDir $dir)) { return }
+# Guvenilir klasor (yukseltme) oldugu gibi kalir. Degilse kenara alinir (icine dokunulmaz) ve ACL'si olusturma
+# aninda verilerek yeniden yaratilir; tutamac tabanli denetim gecmezse (arada ad kapildiysa) tekrar denenir.
+function Initialize-SecureDir([string]$dir, $handle) {
+    if ($handle) { return $handle }
     for ($i = 0; $i -lt 3; $i++) {
-        Remove-TreeSafe $dir
-        $made = [IO.Directory]::CreateDirectory($dir, (New-ProtectedAcl))
-        # Arada baskasi ayni adi aldiysa (baglanti ya da kendi klasoru) dogrulama tutmaz: tekrar sil
-        if ((Test-TrustedDir $dir) -and @($made.GetFileSystemInfos()).Count -eq 0) { return }
+        if (Test-Entry $dir) {
+            $aside = Move-Aside $dir
+            Write-Host "  Güvenilir durumda olmayan eski klasör kenara alındı (içine dokunulmadı): $aside" -ForegroundColor Yellow
+        }
+        [IO.Directory]::CreateDirectory($dir, (New-ProtectedAcl)) | Out-Null
+        $h = Open-TrustedDir $dir
+        if ($h) { return $h }
+        Start-Sleep -Milliseconds 200
     }
     throw "$dir güvenli olarak oluşturulamadı."
+}
+
+# Yalnizca yoneticilerin yazabildigi klasorlerin altindaki gecici klasorler icin; rmdir /s baglantilari izlemez
+function Remove-AdminDir([string]$p) {
+    if (Test-Entry $p) { & $cmd /c rmdir /s /q "$p" | Out-Null }
 }
 
 function Invoke-Sc([string]$argLine, [switch]$AllowFail) {
@@ -192,6 +290,7 @@ function Invoke-Sc([string]$argLine, [switch]$AllowFail) {
 }
 
 $warn = @()
+$newExe = Join-Path $app 'CortmedGuard.new.exe'
 try {
     Write-Host ''
     Write-Host '  CORTMED davranış bekçisi kuruluyor...' -ForegroundColor Cyan
@@ -201,8 +300,8 @@ try {
     Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security')
 
     # 1) Klasorler ve ACL (hizmet baslamadan once)
-    Initialize-SecureDir $app $appTrusted
-    Initialize-SecureDir $data $dataTrusted
+    $appH = Initialize-SecureDir $app $appH
+    $dataH = Initialize-SecureDir $data $dataH
     Write-Host '  [OK] Klasörler hazır (kullanıcılar yalnızca okuyabilir)' -ForegroundColor Green
 
     # 2) Kurallar, imza ve Sysmon ayari
@@ -217,12 +316,11 @@ try {
 
     # 3) Kaynaklari Program Files'a kopyala ve orada derle (once yeni ad; hizmet ancak derleme tutarsa durur)
     $srcDir = Join-Path $app 'src'
-    Remove-TreeSafe $srcDir
+    Remove-AdminDir $srcDir
     New-Item -ItemType Directory $srcDir | Out-Null
     foreach ($f in $csFiles + $engineCs) { Copy-Item $f $srcDir -Force }
     $csc = Join-Path $winDir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     if (-not (Test-Path $csc)) { $csc = Join-Path $winDir 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
-    $newExe = Join-Path $app 'CortmedGuard.new.exe'
     $refs = 'System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Xml.Linq.dll', 'System.ServiceProcess.dll', 'System.Web.Extensions.dll'
     $cscArgs = @('/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/codepage:65001', "/out:$newExe") +
         ($refs | ForEach-Object { "/reference:$_" }) + @(Get-ChildItem $srcDir -Filter *.cs | ForEach-Object FullName)
@@ -247,7 +345,7 @@ try {
     } else {
         $tmp = Join-Path $app 'sysmon-tmp'
         try {
-            Remove-TreeSafe $tmp
+            Remove-AdminDir $tmp
             New-Item -ItemType Directory $tmp | Out-Null
             Write-Host '  Sysmon indiriliyor (Microsoft Sysinternals)...'
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -270,7 +368,7 @@ try {
             $warn += "Sysmon kurulmadı: $($_.Exception.Message)"
         } finally {
             Set-Location $winDir
-            try { Remove-TreeSafe $tmp } catch { }
+            Remove-AdminDir $tmp
         }
     }
 
@@ -288,19 +386,30 @@ try {
     catch {
         # Yukseltme yarida kaldi: eski hizmeti yeniden baslat ki bekci kapali kalmasin
         if ($existing) { Invoke-Sc "start $svcName" -AllowFail }
-        throw "CortmedGuard.exe değiştirilemedi (eski sürüm çalışmaya devam ediyor): $($_.Exception.Message)"
+        throw "CortmedGuard.exe değiştirilemedi (eski sürüm yeniden başlatıldı): $($_.Exception.Message)"
     }
-    $bin = 'binPath= "\"' + $exe + '\""'
-    if ($existing) { Invoke-Sc "config $svcName $bin start= auto obj= LocalSystem" }
-    else { Invoke-Sc "create $svcName $bin start= auto obj= LocalSystem" }
-    Invoke-Sc "failure $svcName reset= 86400 actions= restart/5000/restart/5000/restart/5000"
-    Invoke-Sc "start $svcName"
+    try {
+        $bin = 'binPath= "\"' + $exe + '\""'
+        if ($existing) { Invoke-Sc "config $svcName $bin start= auto obj= LocalSystem" }
+        else { Invoke-Sc "create $svcName $bin start= auto obj= LocalSystem" }
+        Invoke-Sc "failure $svcName reset= 86400 actions= restart/5000/restart/5000/restart/5000"
+        Invoke-Sc "start $svcName"
+    } catch {
+        # Bir kez daha baslatmayi dene; yine de hatayi acikca bildir
+        if (Get-Service $svcName -ErrorAction SilentlyContinue) { Invoke-Sc "start $svcName" -AllowFail }
+        throw "CortmedGuard hizmeti ayarlanamadı veya başlatılamadı: $($_.Exception.Message)"
+    }
     Write-Host '  [OK] CortmedGuard hizmeti çalışıyor' -ForegroundColor Green
 } catch {
+    Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue
     Write-Host "  Davranış bekçisi kurulamadı: $($_.Exception.Message)" -ForegroundColor Red
+    if ($appH) { $appH.Dispose() }
+    if ($dataH) { $dataH.Dispose() }
     if ($Elevated) { Read-Host '  Kapatmak için Enter' | Out-Null }
     exit 1
 }
+if ($appH) { $appH.Dispose() }
+if ($dataH) { $dataH.Dispose() }
 
 if ($warn) {
     foreach ($w in $warn) { Write-Host "  $w" -ForegroundColor Yellow }

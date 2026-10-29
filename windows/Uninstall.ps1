@@ -13,7 +13,12 @@ foreach ($p in $procs | Where-Object { $_ }) {
 }
 
 # Davranis bekcisi: yalnizca Program Files'taki (kullanicinin yazamadigi) kopya yonetici olarak calistirilir
-$pfBase = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+# Ortam degiskeni yerine: 64 bit islemde [Environment], 32 bit islemde kayit defterindeki 64 bit Program Files
+$pfBase = [Environment]::GetFolderPath('ProgramFiles')
+if (-not [Environment]::Is64BitProcess) {
+    $w6432 = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion' -Name ProgramW6432Dir -ErrorAction SilentlyContinue).ProgramW6432Dir
+    if ($w6432) { $pfBase = $w6432 }
+}
 $guardUninstall = Join-Path $pfBase 'Cortmed\Uninstall-Guard.ps1'
 if (Test-Path $guardUninstall) {
     # Her zaman 64 bit Windows PowerShell (32 bit kabukta Program Files x86'ya donerdi)
