@@ -1,0 +1,34 @@
+{
+  "freezeAt": 80,
+  "warnAt": 50,
+  "windowSeconds": 300,
+  "massFileCount": 50,
+  "massFileSeconds": 10,
+  "trustedLocationBonus": -30,
+  "points": {
+    "Persistence": 35,
+    "TamperOtherApp": 50,
+    "HiddenScript": 30,
+    "DisableProtection": 60,
+    "Injection": 50,
+    "LsassAccess": 70,
+    "MassFileChange": 70
+  },
+  "reasons": {
+    "Persistence": "Kendini açılışa eklemeye çalıştı.",
+    "TamperOtherApp": "Başka bir programın (Discord/tarayıcı) dosyalarını değiştirmeye çalıştı.",
+    "HiddenScript": "Gizlenmiş bir komut başlattı.",
+    "DisableProtection": "Virüs korumasını kapatmaya çalıştı.",
+    "Injection": "Başka bir programın içine kod sokmaya çalıştı.",
+    "LsassAccess": "Windows'un şifre belleğine erişmeye çalıştı.",
+    "MassFileChange": "Kısa sürede çok sayıda belgeyi değiştirdi."
+  },
+  "neverFreeze": [
+    "system", "system.exe", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+    "services.exe", "lsass.exe", "explorer.exe", "cortmedguard.exe", "cortmedsecurity.exe"
+  ],
+  "trustedImages": [
+    "MsMpEng.exe", "svchost.exe", "CortmedGuard.exe", "CortmedSecurity.exe",
+    "TiWorker.exe", "TrustedInstaller.exe"
+  ]
+}
