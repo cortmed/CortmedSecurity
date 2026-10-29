@@ -46,7 +46,13 @@
     assertEq('redirect reuse names origin', !!pr && pr.textContent.indexOf('garanti.com.tr sitesinde girdiğiniz şifre için: Bu şifreyi başka 1 sitede de kullanıyorsunuz: a.com.') >= 0, true);
     assertEq('redirect origin bold', !!pr && pr.querySelector('b') && pr.querySelector('b').textContent, 'garanti.com.tr');
     assertEq('redirect reuse no mute button', pr ? Array.prototype.map.call(pr.querySelectorAll('button'), function (b) { return b.textContent; }) : null, ['Tamam']);
-    assertEq('redirect cardsShown sent', window.__sent.filter(function (m) { return m.type === 'cardsShown'; }).length, 1);
+    // cardsShown hemen gitmez (eski sayfa kapanirsa kart yeni sayfada yeniden gosterilsin); 1.5 sn sonra gider
+    const shownCount = function () { return window.__sent.filter(function (m) { return m.type === 'cardsShown'; }).length; };
+    assertEq('cardsShown not sent immediately', shownCount(), 0);
+    const shownTimer = window.__timers.filter(function (t) { return t.ms === 1500; });
+    assertEq('cardsShown delayed 1500 ms', shownTimer.length, 1);
+    if (shownTimer.length) { clearTimeout(shownTimer[0].id); shownTimer[0].fn(); }
+    assertEq('redirect cardsShown sent', shownCount(), 1);
     if (pl) pl.querySelector('[data-act="close"]').click();
     if (pr) pr.querySelector('[data-act="close"]').click();
 

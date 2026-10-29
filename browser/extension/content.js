@@ -8,6 +8,7 @@
   // Kart ve MFA isleri DOM hazir olunca yapilir.
 
   const PW = 'input[type="password"]';
+  const CARDS_SHOWN_DELAY_MS = 1500;
   const CONTROL = 'button, input[type="submit"], input[type="button"], input[type="image"], [role="button"]';
   const DEDUPE_MS = 2000;
   const CARD_MS = 30000;
@@ -159,7 +160,9 @@
     const from = typeof r.from === 'string' && r.from ? r.from.slice(0, 100) : null;
     if (leaked > 0) showLeaked(leaked, from);
     if (reuse.length) showReuse(reuse, from);
-    if (leaked > 0 || reuse.length) send({ type: 'cardsShown' });
+    // Form gonderiminde eski sayfa birazdan kapanir; kart gercekten goruldukten sonra bildir,
+    // kapanirsa zamanlayici calismaz ve kart yeni sayfada yeniden gosterilir.
+    if (leaked > 0 || reuse.length) setTimeout(function () { send({ type: 'cardsShown' }); }, CARDS_SHOWN_DELAY_MS);
   }
 
   // ---------- Giris denemesi algilama ----------
