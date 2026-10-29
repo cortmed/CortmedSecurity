@@ -202,6 +202,7 @@ namespace Cortmed.Guard
             public List<int> Pids = new List<int>();
             public List<long> Starts = new List<long>();
             public int SentGeneration; // bu baglanti neslinde gonderildi mi
+            public int PidsOnDisk;     // pending.json'dan yuklenirken kayitli pid sayisi
         }
 
         readonly object _lock = new object();
@@ -216,6 +217,8 @@ namespace Cortmed.Guard
         ScoreBoard _board;
         readonly Dictionary<int, int> _baseScores = new Dictionary<int, int>();
         readonly Dictionary<int, string> _rootHash = new Dictionary<int, string>();
+        readonly Dictionary<int, string> _rootPublisher = new Dictionary<int, string>(); // WinVerifyTrust kok basina bir kez
+        readonly Dictionary<int, int> _lastWarnScore = new Dictionary<int, int>(); // ayni puanda tekrar bulgu/kayit yazma
         readonly Dictionary<string, Pending> _pending = new Dictionary<string, Pending>();
         readonly Dictionary<int, Pending> _byRoot = new Dictionary<int, Pending>(); // canli izlenen donuk kokler
         readonly HashSet<string> _allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -250,6 +253,7 @@ namespace Cortmed.Guard
             _classifier = new Classifier(r);
             _board = new ScoreBoard(r);
             _baseScores.Clear();
+            _lastWarnScore.Clear();
         }
 
         // Imzasi dogrulanmis yeni kurallar. Puan tahtasi sifirlanir; bekleyen sorular korunur.
@@ -351,6 +355,8 @@ namespace Cortmed.Guard
             _board.Forget(root);
             _baseScores.Remove(root);
             _rootHash.Remove(root);
+            _rootPublisher.Remove(root);
+            _lastWarnScore.Remove(root);
             // Bekleyen soru (varsa) cevaplanabilir kalir ama bu pid'in yeni agaci donuk sayilmaz.
             _byRoot.Remove(root);
         }
@@ -384,6 +390,38 @@ namespace Cortmed.Guard
             return h;
         }
 
+        string PublisherOf(int root, string image)
+        {
+            string p;
+            if (_rootPublisher.TryGetValue(root, out p)) return p;
+            p = FileTrust.Publisher(image) ?? "";
+            _rootPublisher[root] = p;
+            return p;
+        }
+
+        // Ayni kok icin Warn/izinli kaydi yalnizca puan son kayittan yuksekse yazilir.
+        bool WarnScoreRose(int root, int score)
+        {
+            int last;
+            if (_lastWarnScore.TryGetValue(root, out last) && score <= last) return false;
+            _lastWarnScore[root] = score;
+            return true;
+        }
+
+        // %windir%\System32 ve SysWOW64 altindaki Microsoft araclari (wscript, mshta, powershell...)
+        // kalici izin listesine alinmaz: tek seferlik izin verilir.
+        public static bool IsSystemBinary(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string win = Environment.GetEnvironmentVariable("SystemRoot");
+            if (string.IsNullOrEmpty(win)) win = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrEmpty(win)) return false;
+            win = win.TrimEnd('\\') + "\\";
+            foreach (string sub in new[] { "System32\\", "SysWOW64\\" })
+                if (path.StartsWith(win + sub, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         static string FileName(string path)
         {
             if (string.IsNullOrEmpty(path)) return "";
@@ -403,14 +441,16 @@ namespace Cortmed.Guard
             string hash = HashOf(root, image);
             if (hash.Length > 0 && _allowed.Contains(hash))
             {
+                if (d.Level == DecisionLevel.Warn && !WarnScoreRose(root, d.Score)) return false;
                 _log.Write("İzin verilmiş program, işlem yapılmadı: " + image + " (puan " + d.Score + ") " + reasons);
                 return false;
             }
 
             if (d.Level == DecisionLevel.Warn)
             {
+                if (!WarnScoreRose(root, d.Score)) return false;
                 _log.Write("Şüpheli davranış (puan " + d.Score + "): " + image + " (kök " + root + ") " + reasons);
-                RecordFinding("YELLOW", image, hash, d.Score, d.Reasons, "Program durdurulmadı; şüpheli davranış kaydedildi.");
+                RecordFinding("YELLOW", image, hash, PublisherOf(root, image), d.Score, d.Reasons, "Program durdurulmadı; şüpheli davranış kaydedildi.");
                 return false;
             }
 
@@ -421,7 +461,7 @@ namespace Cortmed.Guard
             if (frozen.Count == 0)
             {
                 _log.Write("Dondurma eşiği aşıldı ama ağaçta dondurulabilen süreç yok: " + image + " (puan " + d.Score + ") " + reasons);
-                RecordFinding("YELLOW", image, hash, d.Score, d.Reasons, "Program dondurulamadı; şüpheli davranış kaydedildi.");
+                RecordFinding("YELLOW", image, hash, PublisherOf(root, image), d.Score, d.Reasons, "Program dondurulamadı; şüpheli davranış kaydedildi.");
                 return false;
             }
 
@@ -433,7 +473,7 @@ namespace Cortmed.Guard
                 Id = Guid.NewGuid().ToString("N"),
                 Program = FileName(image),
                 Path = image,
-                Publisher = FileTrust.Publisher(image),
+                Publisher = PublisherOf(root, image),
                 Score = d.Score,
                 Reasons = new List<string>(d.Reasons)
             };
@@ -487,14 +527,16 @@ namespace Cortmed.Guard
                         var live = Live(p, true);
                         _control.KillTree(live);
                         _log.Write("Kullanıcı kapatmayı seçti: " + p.Prompt.Path + " (kapatılan " + string.Join(",", live) + ")");
-                        RecordFinding("RED", p.Prompt.Path, p.Hash, p.Prompt.Score, p.Prompt.Reasons,
-                            "Program kullanıcının onayıyla kapatıldı. Dosyaya dokunulmadı.");
+                        RecordFinding("RED", p.Prompt.Path, p.Hash, p.Prompt.Publisher ?? "", p.Prompt.Score, p.Prompt.Reasons,
+                            "Program sizin onayınızla kapatıldı. Dosyaya dokunulmadı.");
                     }
                     else
                     {
                         var live = Live(p, false);
                         _control.ResumeTree(live);
-                        if (Hashing.IsSha256Hex(p.Hash)) AddAllowed(p.Hash);
+                        if (IsSystemBinary(p.Prompt.Path))
+                            _log.Write("Windows sistem aracı yalnızca bu sefer için izinli; izin listesine eklenmedi: " + p.Prompt.Path);
+                        else if (Hashing.IsSha256Hex(p.Hash)) AddAllowed(p.Hash);
                         else _log.Write("Dosya parmak izi bilinmiyor; izin listesine eklenemedi: " + p.Prompt.Path);
                         if (tracked)
                         {
@@ -563,13 +605,12 @@ namespace Cortmed.Guard
 
         // ---- kalici dosyalar ----
 
-        void RecordFinding(string level, string image, string hash, int score, List<string> reasons, string note)
+        void RecordFinding(string level, string image, string hash, string publisher, int score, List<string> reasons, string note)
         {
             try
             {
                 string name = FileName(image);
                 if (name.Length == 0) name = "bilinmeyen program";
-                string publisher = FileTrust.Publisher(image);
                 var report = new StringBuilder();
                 report.AppendLine("Program: " + image);
                 report.AppendLine("Yayıncı: " + (publisher.Length > 0 ? publisher : "bilinmiyor (imzasız)"));
@@ -645,70 +686,104 @@ namespace Cortmed.Guard
             catch (Exception ex) { _log.Write("pending.json yazılamadı: " + ex.Message); }
         }
 
-        // Yeniden baslamada: surecleri hala ayni olan kayitlar geri yuklenir, digerleri atilir.
+        // Yeniden baslamada: surecleri hala ayni olan kayitlar geri yuklenir, surecleri bitenler atilir.
+        // Her kayit ayri ayristirilir: bozuk kayit atlanir (dosyanin ozgun hali pending.json.bad'e
+        // yedeklenir), digerleri korunur. Dosyanin tamami okunamazsa pending.json.bad'e tasinir ve
+        // ustune bos kayit yazilmaz.
         // Geri yuklenen kayitlar _byRoot'a eklenmez (agac bilgisi yeni; donuk surecler cocuk baslatamaz).
         void LoadPending()
         {
             string path = DataFile("pending.json");
             if (!File.Exists(path)) return;
-            bool changed = false;
+            object[] arr;
             try
             {
                 var ser = new JavaScriptSerializer();
                 ser.MaxJsonLength = int.MaxValue;
-                var arr = ser.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as object[];
+                arr = ser.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as object[];
                 if (arr == null) throw new InvalidDataException("dizi değil");
-                foreach (object o in arr)
-                {
-                    var d = o as Dictionary<string, object>;
-                    if (d == null) { changed = true; continue; }
-                    var p = new Pending();
-                    p.Root = ToInt(Get(d, "root"));
-                    p.Hash = Convert.ToString(Get(d, "hash") ?? "");
-                    p.Prompt = new Prompt
-                    {
-                        Id = Convert.ToString(Get(d, "id") ?? ""),
-                        Program = Convert.ToString(Get(d, "program") ?? ""),
-                        Path = Convert.ToString(Get(d, "path") ?? ""),
-                        Publisher = Convert.ToString(Get(d, "publisher") ?? ""),
-                        Score = ToInt(Get(d, "score")),
-                        Reasons = new List<string>()
-                    };
-                    var reasons = Get(d, "reasons") as object[];
-                    if (reasons != null) foreach (object r in reasons) p.Prompt.Reasons.Add(Convert.ToString(r));
-                    var pids = Get(d, "pids") as object[];
-                    var starts = Get(d, "starts") as object[];
-                    if (p.Prompt.Id.Length == 0 || pids == null || starts == null || pids.Length != starts.Length)
-                    {
-                        changed = true;
-                        continue;
-                    }
-                    for (int i = 0; i < pids.Length; i++)
-                    {
-                        int pid = ToInt(pids[i]);
-                        long rec = long.Parse(Convert.ToString(starts[i], CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
-                        if (rec != 0 && _control.StartTimeOf(pid) == rec)
-                        {
-                            p.Pids.Add(pid);
-                            p.Starts.Add(rec);
-                        }
-                        else changed = true;
-                    }
-                    if (p.Pids.Count == 0)
-                    {
-                        _log.Write("Bekleyen sorunun süreçleri artık yok, kaldırıldı: " + p.Prompt.Path);
-                        continue;
-                    }
-                    _pending[p.Prompt.Id] = p;
-                }
             }
             catch (Exception ex)
             {
-                _log.Write("pending.json okunamadı: " + ex.Message);
-                changed = true;
+                _log.Write("pending.json okunamadı (" + ex.Message + "); pending.json.bad olarak saklanıyor.");
+                MoveToBad(path, true);
+                return;
             }
-            if (changed) SavePending();
+
+            bool changed = false, corrupt = false;
+            for (int n = 0; n < arr.Length; n++)
+            {
+                try
+                {
+                    var p = ParsePending(arr[n]);
+                    if (p.Pids.Count == 0)
+                    {
+                        _log.Write("Bekleyen sorunun süreçleri artık yok, kaldırıldı: " + p.Prompt.Path);
+                        changed = true;
+                        continue;
+                    }
+                    if (p.Pids.Count != p.PidsOnDisk) changed = true;
+                    _pending[p.Prompt.Id] = p;
+                }
+                catch (Exception ex)
+                {
+                    _log.Write("pending.json kaydı " + n + " bozuk, atlandı: " + ex.Message);
+                    corrupt = true;
+                }
+            }
+            if (corrupt) MoveToBad(path, false); // ozgun dosyanin kopyasi kalir
+            if (changed || corrupt) SavePending();
             if (_pending.Count > 0) _log.Write(_pending.Count + " bekleyen soru geri yüklendi.");
+        }
+
+        void MoveToBad(string path, bool move)
+        {
+            try
+            {
+                string bad = path + ".bad";
+                if (File.Exists(bad)) File.Delete(bad);
+                if (move) File.Move(path, bad);
+                else File.Copy(path, bad);
+            }
+            catch (Exception ex) { _log.Write("pending.json.bad yazılamadı: " + ex.Message); }
+        }
+
+        Pending ParsePending(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            if (d == null) throw new InvalidDataException("nesne değil");
+            var p = new Pending();
+            p.Root = ToInt(Get(d, "root"));
+            p.Hash = Convert.ToString(Get(d, "hash") ?? "");
+            p.Prompt = new Prompt
+            {
+                Id = Convert.ToString(Get(d, "id") ?? ""),
+                Program = Convert.ToString(Get(d, "program") ?? ""),
+                Path = Convert.ToString(Get(d, "path") ?? ""),
+                Publisher = Convert.ToString(Get(d, "publisher") ?? ""),
+                Score = ToInt(Get(d, "score")),
+                Reasons = new List<string>()
+            };
+            if (p.Prompt.Id.Length == 0) throw new InvalidDataException("id yok");
+            var reasons = Get(d, "reasons") as object[];
+            if (reasons != null) foreach (object r in reasons) p.Prompt.Reasons.Add(Convert.ToString(r));
+            var pids = Get(d, "pids") as object[];
+            var starts = Get(d, "starts") as object[];
+            if (pids == null || starts == null || pids.Length != starts.Length) throw new InvalidDataException("pids/starts geçersiz");
+            var recs = new long[pids.Length];
+            for (int i = 0; i < pids.Length; i++)
+                recs[i] = long.Parse(Convert.ToString(starts[i], CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture);
+            p.PidsOnDisk = pids.Length;
+            for (int i = 0; i < pids.Length; i++)
+            {
+                int pid = Convert.ToInt32(pids[i], CultureInfo.InvariantCulture);
+                if (recs[i] != 0 && _control.StartTimeOf(pid) == recs[i])
+                {
+                    p.Pids.Add(pid);
+                    p.Starts.Add(recs[i]);
+                }
+            }
+            return p;
         }
 
         static object Get(Dictionary<string, object> d, string k)

@@ -6,6 +6,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading;
@@ -345,15 +347,21 @@ namespace Cortmed.Guard
             _dataDir = dataDir;
         }
 
-        protected override void OnStart(string[] args) { StartGuard(); }
+        protected override void OnStart(string[] args) { StartGuard(true); }
         protected override void OnStop() { StopGuard(); }
         protected override void OnShutdown() { StopGuard(); }
 
-        public void StartGuard()
+        // secureDataDir: yalnizca hizmet modunda (SYSTEM) veri klasorunun ACL'si sertlestirilir.
+        public void StartGuard(bool secureDataDir)
         {
             Directory.CreateDirectory(_dataDir);
             _log = new GuardLog(Path.Combine(_dataDir, "guard.log"));
             _log.Write("CortmedGuard başlıyor.");
+            if (secureDataDir)
+            {
+                string err = ApplyDataDirAcl(_dataDir);
+                if (err != null) _log.Write("Veri klasörü izinleri ayarlanamadı: " + err);
+            }
             BehaviorRules rules;
             try { rules = RulesStore.LoadTrusted(_dataDir, RulesStore.PublicX, RulesStore.PublicY, _log); }
             catch (Exception ex)
@@ -370,6 +378,27 @@ namespace Cortmed.Guard
             if (_reader.Start()) _log.Write("Sysmon günlüğü izleniyor.");
             _sysmonTimer = new Timer(SysmonTick, null, 0, 30000);
             _updateTimer = new Timer(UpdateTick, null, TimeSpan.FromMinutes(2), TimeSpan.FromHours(24));
+        }
+
+        // Korunan (miras almayan) ACL: SYSTEM ve Administrators tam yetki, Users okuma/calistirma;
+        // alt klasor ve dosyalara miras. Yerellestirilmis adlar yerine iyi bilinen SID'ler. null: basarili.
+        public static string ApplyDataDirAcl(string dir)
+        {
+            try
+            {
+                var ds = new DirectorySecurity();
+                ds.SetAccessRuleProtection(true, false);
+                var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+                ds.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                    FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+                ds.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                    FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+                ds.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                    FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+                Directory.SetAccessControl(dir, ds);
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
         }
 
         public void StopGuard()
@@ -493,7 +522,7 @@ namespace Cortmed.Guard
             {
                 try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
                 var s = new GuardService(dataDir);
-                try { s.StartGuard(); }
+                try { s.StartGuard(false); }
                 catch (Exception ex) { Console.Error.WriteLine("Başlatılamadı: " + ex.Message); return 1; }
                 Console.WriteLine("CortmedGuard konsolda çalışıyor (" + dataDir + "). Durdurmak için Enter.");
                 Console.ReadLine();

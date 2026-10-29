@@ -974,6 +974,119 @@ public static class GuardTests
         Assert(text.Contains("satir enjeksiyon") && text.Split('\n').Length == 2, "tek satir: " + text);
     }
 
+    static string PendingEntry(string id, int pid, string start)
+    {
+        return "{\"id\":\"" + id + "\",\"root\":" + pid + ",\"hash\":\"\",\"program\":\"" + id + ".exe\",\"path\":\"C:\\\\x\\\\" + id
+            + ".exe\",\"publisher\":\"\",\"score\":90,\"reasons\":[\"r\"],\"pids\":[" + pid + "],\"starts\":[\"" + start + "\"]}";
+    }
+
+    [Test] static void CorruptPendingEntryDoesNotDiscardOthers()
+    {
+        string dir = NewDataDir();
+        string path = Path.Combine(dir, "pending.json");
+        // FakeControl varsayilan baslangic zamani: 1000 + pid
+        File.WriteAllText(path, "[" + PendingEntry("good1", 7000, "8000") + ",42," + PendingEntry("bad", 7100, "x-not-a-number") + ","
+            + "{\"id\":\"bad2\",\"pids\":\"7200\"}," + PendingEntry("good2", 7300, "8300") + "]");
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        Assert(g.PendingCount == 2, "iki iyi kayit geri yuklenmeli: " + g.PendingCount);
+        string text = ReadData(dir, "pending.json");
+        Assert(text.Contains("good1") && text.Contains("good2"), "iyi kayitlar dosyada kalmali: " + text);
+        Assert(File.Exists(path + ".bad") && ReadData(dir, "pending.json.bad").Contains("x-not-a-number"), "ozgun dosya .bad olarak yedeklenmeli");
+        Assert(ReadData(dir, "guard.log").Contains("bozuk"), "bozuk kayit loglanmali");
+        g.OnClientConnected();
+        Assert(s.Sent.Count == 2, "iki soru gonderilmeli");
+        // yeniden baslama: hala iki kayit
+        Assert(new GuardEngine(Rules(), dir, new FakeControl(), new FakeSink()).PendingCount == 2, "yeniden yuklemede iki kayit");
+    }
+
+    [Test] static void UnparseablePendingFileIsMovedToBad()
+    {
+        string dir = NewDataDir();
+        string path = Path.Combine(dir, "pending.json");
+        File.WriteAllText(path, "{{{ bozuk json");
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        Assert(g.PendingCount == 0, "kayit yok");
+        Assert(!File.Exists(path), "pending.json bos kayitla ezilmemeli");
+        Assert(ReadData(dir, "pending.json.bad") == "{{{ bozuk json", ".bad'e tasinmali");
+        RunReplay(g);
+        Assert(c.Frozen.Count == 1 && s.Sent.Count == 1, "motor calismaya devam etmeli");
+    }
+
+    [Test] static void RepeatedWarnAtSameScoreWritesOnce()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(BehaviorRules.Parse(Encoding.UTF8.GetString(RulesBytes(200))), dir, c, s);
+        string evil = @"C:\Users\k\AppData\Local\Temp\evil.exe";
+        g.OnEvent(Start(5000, 900, evil, 0));
+        g.OnEvent(new GuardEvent { EventId = 13, Pid = 5000, Image = evil, Time = new DateTime(2026, 10, 29, 10, 0, 1, DateTimeKind.Utc),
+            TargetObject = @"HKU\S-1-5-21-1\Software\Microsoft\Windows\CurrentVersion\Run\X" });
+        string findings = Path.Combine(dir, "findings.json");
+        Assert(File.Exists(findings), "ilk Warn bulgu yazmali");
+        File.Delete(findings);
+        for (int i = 0; i < 20; i++)
+            g.OnEvent(new GuardEvent { EventId = 11, Pid = 5000, Image = evil, TargetFilename = @"C:\Users\k\Documents\f" + i + ".docx",
+                Time = new DateTime(2026, 10, 29, 10, 0, 2, DateTimeKind.Utc) });
+        Assert(!File.Exists(findings), "ayni puanda findings.json yeniden yazilmamali");
+        Func<int> warnLines = () => ReadData(dir, "guard.log").Split('\n').Count(l => l.Contains("Şüpheli davranış"));
+        Assert(warnLines() == 1, "tek Warn kayit satiri: " + warnLines());
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 5005, ParentPid = 5000, Image = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            CommandLine = "powershell -enc AAAA", Time = new DateTime(2026, 10, 29, 10, 0, 3, DateTimeKind.Utc) });
+        Assert(File.Exists(findings) && warnLines() == 2, "puan artinca yeniden yazilmali: " + warnLines());
+        Assert(c.Frozen.Count == 0, "dondurma yok");
+    }
+
+    static void SystemToolTree(GuardEngine g, int pid, int sec)
+    {
+        string img = @"C:\Windows\System32\wscript.exe";
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = pid, ParentPid = 900, Image = img, Hashes = "SHA256=" + new string('B', 64),
+            Time = new DateTime(2026, 10, 29, 10, 0, sec, DateTimeKind.Utc) });
+        g.OnEvent(new GuardEvent { EventId = 13, Pid = pid, Image = img, Time = new DateTime(2026, 10, 29, 10, 0, sec + 1, DateTimeKind.Utc),
+            TargetObject = @"HKU\S-1-5-21-1\Software\Microsoft\Windows\CurrentVersion\Run\X" });
+        g.OnEvent(new GuardEvent { EventId = 11, Pid = pid, Image = img, Time = new DateTime(2026, 10, 29, 10, 0, sec + 2, DateTimeKind.Utc),
+            TargetFilename = @"C:\Users\k\AppData\Local\Discord\app-1.0.9\modules\discord_desktop_core-1\discord_desktop_core\index.js" });
+        g.OnEvent(new GuardEvent { EventId = 13, Pid = pid, Image = img, Time = new DateTime(2026, 10, 29, 10, 0, sec + 3, DateTimeKind.Utc),
+            TargetObject = @"HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths\C:\x" });
+    }
+
+    [Test] static void SystemBinaryAllowIsOneTimeOnly()
+    {
+        Assert(GuardEngine.IsSystemBinary(@"c:\windows\SYSTEM32\wscript.exe") && GuardEngine.IsSystemBinary(@"C:\Windows\SysWOW64\mshta.exe"), "sistem yolu");
+        Assert(!GuardEngine.IsSystemBinary(@"C:\Windows\System32x\a.exe") && !GuardEngine.IsSystemBinary(@"C:\Windows\a.exe"), "benzer yol degil");
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        SystemToolTree(g, 6000, 0);
+        Assert(c.Frozen.Count == 1 && s.Sent.Count == 1, "wscript agaci dondurulmali");
+        Assert(g.OnAnswer(s.Sent[0].Id, "allow"));
+        Assert(c.Resumed.Count == 1, "devam etmeli");
+        Assert(!ReadData(dir, "allowed.txt").Contains(new string('B', 64)), "sistem araci izin listesine eklenmemeli");
+        SystemToolTree(g, 6100, 10);
+        Assert(c.Frozen.Count == 2 && s.Sent.Count == 2, "ayni imajla yeni agac yine dondurulmali");
+    }
+
+    [Test] static void DataDirAclIsProtectedWithWellKnownSids()
+    {
+        string dir = NewDataDir();
+        Assert(GuardService.ApplyDataDirAcl(dir) == null, "ACL ayarlanmali");
+        var acl = Directory.GetAccessControl(dir);
+        Assert(acl.AreAccessRulesProtected, "miras kapali olmali");
+        var rules = acl.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+            .Cast<System.Security.AccessControl.FileSystemAccessRule>().ToList();
+        Func<System.Security.Principal.WellKnownSidType, System.Security.AccessControl.FileSystemRights, bool> has = (sid, r) =>
+            rules.Any(x => x.IdentityReference.Equals(new System.Security.Principal.SecurityIdentifier(sid, null))
+                && (x.FileSystemRights & r) == r && !x.IsInherited
+                && x.InheritanceFlags == (System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit));
+        Assert(rules.Count == 3, "uc kural: " + rules.Count);
+        Assert(has(System.Security.Principal.WellKnownSidType.LocalSystemSid, System.Security.AccessControl.FileSystemRights.FullControl), "SYSTEM");
+        Assert(has(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, System.Security.AccessControl.FileSystemRights.FullControl), "Administrators");
+        Assert(has(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, System.Security.AccessControl.FileSystemRights.ReadAndExecute), "Users");
+        var users = rules.First(x => x.IdentityReference.Equals(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null)));
+        Assert((users.FileSystemRights & System.Security.AccessControl.FileSystemRights.WriteData) == 0, "Users yazamamali");
+    }
+
     // ---- kural dogrulama ----
 
     static byte[] ToDer(byte[] p1363)
