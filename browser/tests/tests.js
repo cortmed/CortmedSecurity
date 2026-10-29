@@ -60,6 +60,30 @@
     assertEq('range hit', L.parseRange('ABC:3\r\n' + sfx + ':42\r\n', sfx), 42);
     assertEq('range miss', L.parseRange('ABC:3\r\n', sfx), 0);
 
+    for (const ext of ['dll', 'com', 'docm']) assertEq('scan ' + ext, L.isScannable('x.' + ext), false);
+    for (const ext of ['msi', 'scr', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'jar', 'zip', 'rar', 'iso', 'img']) {
+      assertEq('scan ' + ext, L.isScannable('x.' + ext), true);
+    }
+
+    // Bilinen cevap: PowerShell Rfc2898DeriveBytes ile bagimsiz hesaplandi
+    assertEq('fp known answer', await L.fingerprint('Cortmed-Test-1', salt), '3242b8cc3de4f67d744c0e192cbb8efe');
+    for (const bad of ['', 'zz', '00112233445566778899aabbccddeef', salt + '00']) {
+      let threw = false;
+      try { await L.fingerprint('x', bad); } catch (e) { threw = true; }
+      assertEq('fp bad salt ' + bad.length, threw, true);
+    }
+
+    assertEq('mfa until==now', L.mfaState({ status: 'later', until: now }, now), 'ask');
+    assertEq('range lower suffix', L.parseRange('ABC:3\r\n' + sfx + ':42\r\n', sfx.toLowerCase()), 42);
+    assertEq('range LF only', L.parseRange('ABC:3\n' + sfx + ':7\n', sfx), 7);
+    assertEq('range padding 0', L.parseRange(sfx + ':0\r\nABC:3\r\n', sfx), 0);
+    assertEq('etld1 upper', L.etld1('WWW.Google.COM'), 'google.com');
+    assertEq('etld1 trailing dot', L.etld1('accounts.google.com.'), 'google.com');
+    assertEq('etld1 empty', L.etld1(''), '');
+    assertEq('etld1 bare co.uk', L.etld1('co.uk'), 'co.uk');
+    const e1 = L.recordUse({ fpOld: ['a.com'], fpKeep: ['b.com'] }, 'fpNew', 'a.com');
+    assertEq('use emptied removed', Object.keys(e1.index).sort(), ['fpKeep', 'fpNew']);
+
     assertEq('sha1', await L.sha1Hex('password'), '5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8');
   } catch (e) {
     fails.push('exception: ' + e.message);

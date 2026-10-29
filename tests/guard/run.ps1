@@ -477,37 +477,54 @@ if (-not $edge) { Write-Host 'SKIP eklenti cekirdek testleri (Edge yok)' }
 else {
     # file:// sanal zamanda WebCrypto'yu bekletmez; 127.0.0.1 uzerinden sunulur, /hold sanal zamani durdurur.
     $bdTmp = Join-Path $env:TEMP ('cortmed-edge-' + [guid]::NewGuid().ToString('N'))
-    $tcp = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $tcp.Start()
-    $bdPort = $tcp.LocalEndpoint.Port; $tcp.Stop()
-    $lis = New-Object Net.HttpListener
-    $lis.Prefixes.Add("http://127.0.0.1:$bdPort/")
-    $bdProc = $null
-    try {
-        $lis.Start()
-        $bdBase = Join-Path $root 'browser'
-        $bdProc = Start-Process $edge -ArgumentList '--headless=new', '--disable-gpu', "--user-data-dir=$bdTmp", '--virtual-time-budget=5000', '--dump-dom', "http://127.0.0.1:$bdPort/tests/test.html" -RedirectStandardOutput "$bdTmp.out" -RedirectStandardError "$bdTmp.err" -PassThru -WindowStyle Hidden
-        $ar = $lis.BeginGetContext($null, $null)
-        $sw = [Diagnostics.Stopwatch]::StartNew()
-        while (-not $bdProc.HasExited -and $sw.Elapsed.TotalSeconds -lt 60) {
-            if (-not $ar.AsyncWaitHandle.WaitOne(50)) { continue }
-            $ctx = $lis.EndGetContext($ar); $ar = $lis.BeginGetContext($null, $null)
-            $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath).TrimStart('/') -replace '/', '\'
-            $file = Join-Path $bdBase $rel
-            $bytes = [byte[]]@()
-            if ($rel -eq 'hold') { Start-Sleep -Milliseconds 300 }
-            elseif ($rel -notmatch '\.\.' -and (Test-Path $file -PathType Leaf)) {
-                $bytes = [IO.File]::ReadAllBytes($file)
-                $ctx.Response.ContentType = if ($rel -like '*.js') { 'text/javascript' } else { 'text/html; charset=utf-8' }
-            } else { $ctx.Response.StatusCode = 404 }
-            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length); $ctx.Response.Close()
+    $lis = $null; $bdPort = 0
+    for ($try = 0; $try -lt 3 -and -not $lis; $try++) {
+        $tcp = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $tcp.Start()
+        $bdPort = $tcp.LocalEndpoint.Port; $tcp.Stop()
+        $cand = New-Object Net.HttpListener
+        $cand.Prefixes.Add("http://127.0.0.1:$bdPort/")
+        try { $cand.Start(); $lis = $cand } catch { try { $cand.Close() } catch {} }
+    }
+    if (-not $lis) { Check 'eklenti cekirdek testleri (Edge)' $false 'HttpListener baslatilamadi' }
+    else {
+        $bdProc = $null
+        try {
+            $bdBase = Join-Path $root 'browser'
+            $bdArgs = '--headless=new', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--disable-component-update', '--disable-sync', "--user-data-dir=$bdTmp", '--virtual-time-budget=5000', '--dump-dom', "http://127.0.0.1:$bdPort/tests/test.html"
+            $bdProc = Start-Process $edge -ArgumentList $bdArgs -RedirectStandardOutput "$bdTmp.out" -RedirectStandardError "$bdTmp.err" -PassThru -WindowStyle Hidden
+            $ar = $lis.BeginGetContext($null, $null)
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            while (-not $bdProc.HasExited -and $sw.Elapsed.TotalSeconds -lt 60) {
+                if (-not $ar.AsyncWaitHandle.WaitOne(50)) { continue }
+                try {
+                    $ctx = $lis.EndGetContext($ar)
+                } catch { $ar = $lis.BeginGetContext($null, $null); continue }
+                $ar = $lis.BeginGetContext($null, $null)
+                try {
+                    $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath).TrimStart('/') -replace '/', '\'
+                    $file = Join-Path $bdBase $rel
+                    $bytes = [byte[]]@()
+                    if ($rel -eq 'hold') { Start-Sleep -Milliseconds 300 }
+                    elseif ($rel -notmatch '\.\.' -and (Test-Path -LiteralPath $file -PathType Leaf)) {
+                        $bytes = [IO.File]::ReadAllBytes($file)
+                        $ctx.Response.ContentType = if ($rel -like '*.js') { 'text/javascript' } else { 'text/html; charset=utf-8' }
+                    } else { $ctx.Response.StatusCode = 404 }
+                    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length); $ctx.Response.Close()
+                } catch { try { $ctx.Response.Abort() } catch {} }
+            }
+            if (-not $bdProc.HasExited) { & taskkill /PID $bdProc.Id /T /F 2>&1 | Out-Null }
+            $bdProc.WaitForExit(10000) | Out-Null
+            $bdOut = if (Test-Path -LiteralPath "$bdTmp.out") { (Get-Content -LiteralPath "$bdTmp.out" -Raw) } else { '' }
+            $m = [regex]::Match("$bdOut", 'id="result">([^<]*)')
+            Check 'eklenti cekirdek testleri (Edge)' ("$bdOut" -match 'id="result">PASS') $m.Groups[1].Value
+        } finally {
+            if ($bdProc -and -not $bdProc.HasExited) {
+                & taskkill /PID $bdProc.Id /T /F 2>&1 | Out-Null
+                $bdProc.WaitForExit(10000) | Out-Null
+            }
+            try { $lis.Close() } catch {}
+            Remove-Item -LiteralPath $bdTmp, "$bdTmp.out", "$bdTmp.err" -Recurse -Force -ErrorAction SilentlyContinue
         }
-        if (-not $bdProc.HasExited) { $bdProc.Kill() } else { $bdProc.WaitForExit() }
-        $bdOut = if (Test-Path "$bdTmp.out") { (Get-Content "$bdTmp.out" -Raw) } else { '' }
-        $m = [regex]::Match("$bdOut", 'id="result">([^<]*)')
-        Check 'eklenti cekirdek testleri (Edge)' ("$bdOut" -match 'id="result">PASS') $m.Groups[1].Value
-    } finally {
-        $lis.Close()
-        Remove-Item $bdTmp, "$bdTmp.out", "$bdTmp.err" -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

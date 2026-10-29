@@ -3,8 +3,7 @@
   'use strict';
 
   const TWO_PART = ['co.uk', 'com.tr', 'gov.tr', 'edu.tr', 'org.tr', 'net.tr', 'k12.tr', 'com.au', 'co.jp'];
-  const SCAN_EXT = ['exe', 'msi', 'bat', 'cmd', 'ps1', 'vbs', 'js', 'jar', 'scr', 'com', 'dll', 'lnk',
-    'zip', 'rar', '7z', 'iso', 'img', 'apk', 'docm', 'xlsm'];
+  const SCAN_EXT = ['exe', 'msi', 'scr', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'jar', 'zip', 'rar', '7z', 'iso', 'img'];
 
   function etld1(hostname) {
     const h = String(hostname || '').toLowerCase().replace(/\.$/, '');
@@ -25,6 +24,7 @@
   }
 
   function fromHex(hex) {
+    if (typeof hex !== 'string' || !/^[0-9a-f]{32}$/i.test(hex)) throw new Error('bad salt');
     const out = new Uint8Array(hex.length / 2);
     for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
     return out;
