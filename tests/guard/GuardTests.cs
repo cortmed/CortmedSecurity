@@ -465,6 +465,37 @@ public static class GuardTests
         Assert(!ProcessControl.CanFreeze(System.Diagnostics.Process.GetCurrentProcess().Id, Rules()), "kendi sureci");
     }
 
+    [Test] static void FromXmlMapsProcessCreateAndRegistryFields()
+    {
+        var e1 = SysmonReader.FromXml(File.ReadAllText(RepoPath("tests/guard/fixtures/sysmon-event-1.xml"), Encoding.UTF8));
+        Assert(e1.EventId == 1 && e1.Pid == 4321 && e1.ParentPid == 1234, "olay 1 pid");
+        Assert(e1.Image == @"C:\Users\x\Downloads\oyun.exe" && e1.ParentImage == @"C:\Windows\explorer.exe", "olay 1 imaj");
+        Assert(e1.CommandLine.EndsWith("--kur"), "komut satiri");
+        Assert(e1.Time.Kind == DateTimeKind.Utc && e1.Time.Year == 2026 && e1.Time.Hour == 10 && e1.Time.Minute == 0, "zaman utc");
+        Assert(SysmonReader.Sha256Of(e1.Hashes) == "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF", "sha256");
+        Assert(SysmonReader.Sha256Of(null) == "" && SysmonReader.Sha256Of("MD5=AA") == "", "sha256 bos");
+        var e13 = SysmonReader.FromXml(File.ReadAllText(RepoPath("tests/guard/fixtures/sysmon-event-13.xml"), Encoding.UTF8));
+        Assert(e13.EventId == 13 && e13.Pid == 4321, "olay 13 pid");
+        Assert(e13.TargetObject.EndsWith(@"\Run\Oyun"), "hedef nesne");
+    }
+
+    [Test] static void FromXmlMapsSourceTargetFieldsForEvent10()
+    {
+        string xml = "<Event xmlns=\"http://schemas.microsoft.com/win/2004/08/events/event\"><System><EventID>10</EventID><TimeCreated SystemTime=\"2026-10-29T10:00:00.0000000Z\"/></System><EventData>"
+            + "<Data Name=\"SourceProcessId\">11</Data><Data Name=\"SourceImage\">C:\\a.exe</Data><Data Name=\"TargetProcessId\">22</Data><Data Name=\"TargetImage\">C:\\Windows\\System32\\lsass.exe</Data></EventData></Event>";
+        var e = SysmonReader.FromXml(xml);
+        Assert(e.EventId == 10 && e.Pid == 11 && e.TargetPid == 22 && e.Image == @"C:\a.exe" && e.TargetImage.EndsWith("lsass.exe"), "olay 10");
+    }
+
+    [Test] static void SysmonReaderReportsNotRunningWithoutThrowing()
+    {
+        using (var r = new SysmonReader(ev => { }))
+        {
+            Assert(!r.IsSysmonRunning(), "Sysmon bu makinede calismamali");
+            r.Start();
+        }
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
