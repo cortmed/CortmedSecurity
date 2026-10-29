@@ -65,7 +65,7 @@ namespace Cortmed.Guard
             if (s.Length <= max) return s;
             int n = max - 1;
             if (n > 0 && char.IsHighSurrogate(s[n - 1])) n--;
-            return s.Substring(0, n) + "…";
+            return s.Substring(0, n) + "\u2026";
         }
 
         // true: satirin tamami bagli istemciye yazildi.

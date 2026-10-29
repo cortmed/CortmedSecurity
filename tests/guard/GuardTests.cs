@@ -672,6 +672,7 @@ public static class GuardTests
         {
             System.Threading.Thread.Sleep(3000);
             Assert(!c.Connected, "olmayan boruya baglanmamali");
+            Assert(c.ConnectAttempts == 0, "boru yokken Connect denenmemeli: " + c.ConnectAttempts);
         }
         proc.Refresh();
         double cpu = (proc.TotalProcessorTime - before).TotalMilliseconds;

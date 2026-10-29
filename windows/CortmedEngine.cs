@@ -288,6 +288,10 @@ namespace Cortmed
             _thread.Start();
         }
 
+        int _connectAttempts;
+        // Test amacli: Connect() cagrilma sayisi (boru yokken artmamali).
+        public int ConnectAttempts { get { return _connectAttempts; } }
+
         public bool Connected { get { return _connected; } }
         public bool SysmonOk { get { return _sysmonOk; } }
         public bool SysmonPreexisting { get { return _sysmonPre; } }
@@ -347,10 +351,10 @@ namespace Cortmed
         {
             try
             {
-                if (WaitNamedPipe(@"\.\pipe\" + pipeName, 1)) return true;
-                return Marshal.GetLastWin32Error() != 2;
+                if (WaitNamedPipe(@"\\.\pipe\" + pipeName, 1)) return true;
+                return Marshal.GetLastWin32Error() == 121; // ERROR_SEM_TIMEOUT: var ama mesgul
             }
-            catch { return true; }
+            catch { return false; }
         }
 
         void Run()
@@ -363,6 +367,7 @@ namespace Cortmed
                     if (PipeExists(_pipeName))
                     {
                         p = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                        Interlocked.Increment(ref _connectAttempts);
                         p.Connect(500);
                         lock (_lock)
                         {
