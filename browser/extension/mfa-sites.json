@@ -1,0 +1,22 @@
+[
+  { "id": "google", "name": "Google", "domains": ["google.com", "google.com.tr", "gmail.com", "youtube.com"], "url": "https://support.google.com/accounts/answer/185839?hl=tr" },
+  { "id": "microsoft", "name": "Microsoft / Outlook", "domains": ["microsoft.com", "live.com", "outlook.com", "office.com", "microsoftonline.com", "hotmail.com"], "url": "https://support.microsoft.com/tr-tr/help/12408" },
+  { "id": "apple", "name": "Apple", "domains": ["apple.com", "icloud.com"], "url": "https://support.apple.com/tr-tr/102660" },
+  { "id": "instagram", "name": "Instagram", "domains": ["instagram.com"], "url": "https://help.instagram.com/566810106808145" },
+  { "id": "facebook", "name": "Facebook", "domains": ["facebook.com"], "url": "https://www.facebook.com/help/148233965247823" },
+  { "id": "whatsapp", "name": "WhatsApp Web", "domains": ["whatsapp.com"], "url": "https://faq.whatsapp.com/1920866721452534" },
+  { "id": "x", "name": "X", "domains": ["x.com", "twitter.com"], "url": "https://help.x.com/en/managing-your-account/two-factor-authentication" },
+  { "id": "tiktok", "name": "TikTok", "domains": ["tiktok.com"], "url": "https://support.tiktok.com/en/safety-hc/account-and-user-safety/account-safety" },
+  { "id": "discord", "name": "Discord", "domains": ["discord.com"], "url": "https://support.discord.com/hc/en-us/articles/219576828-Setting-up-Multi-Factor-Authentication" },
+  { "id": "steam", "name": "Steam", "domains": ["steampowered.com", "steamcommunity.com"], "url": "https://help.steampowered.com/tr/faqs/view/06B0-26E6-2CF8-254C" },
+  { "id": "epic", "name": "Epic Games", "domains": ["epicgames.com"], "url": "https://www.epicgames.com/help/c-45487929/a10075388" },
+  { "id": "edevlet", "name": "e-Devlet", "domains": ["turkiye.gov.tr"], "url": "https://www.turkiye.gov.tr/2fa-tanitim" },
+  { "id": "ziraat", "name": "Ziraat Bankası", "domains": ["ziraatbank.com.tr"], "url": "https://www.ziraatbank.com.tr/tr/dijital-bankacilik/guvenlik/guvenliginiz-icin-sunduklarimiz" },
+  { "id": "garanti", "name": "Garanti BBVA", "domains": ["garantibbva.com.tr", "garanti.com.tr"], "url": "https://www.garantibbva.com.tr/dijital-bankacilik/sizin-icin-sunduklarimiz" },
+  { "id": "isbank", "name": "İş Bankası", "domains": ["isbank.com.tr"], "url": "https://www.isbank.com.tr/en/safety-tips" },
+  { "id": "akbank", "name": "Akbank", "domains": ["akbank.com"], "url": "https://www.akbank.com/dijital-bankacilik/akilli-cozumler/guvenli-cihaz-tanimlama" },
+  { "id": "yapikredi", "name": "Yapı Kredi", "domains": ["yapikredi.com.tr"], "url": "https://www.yapikredi.com.tr/kendim-icin/sinirsiz-bankacilik/guvenlik/bireysel-internet-guvenlik" },
+  { "id": "vakifbank", "name": "VakıfBank", "domains": ["vakifbank.com.tr"], "url": "https://www.vakifbank.com.tr/tr/dijital-bankacilik/guvenlik/guvenlik-araclari/cep-imza" },
+  { "id": "halkbank", "name": "Halkbank", "domains": ["halkbank.com.tr"], "url": "https://www.halkbank.com.tr/tr/dijital-bankacilik/guvenlik/guvenlik-ayarlari" },
+  { "id": "enpara", "name": "Enpara", "domains": ["enpara.com"], "url": "https://www.enpara.com/guvenlik" }
+]

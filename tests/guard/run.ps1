@@ -485,48 +485,73 @@ else {
         $cand.Prefixes.Add("http://127.0.0.1:$bdPort/")
         try { $cand.Start(); $lis = $cand } catch { try { $cand.Close() } catch {} }
     }
-    if (-not $lis) { Check 'eklenti cekirdek testleri (Edge)' $false 'HttpListener baslatilamadi' }
+    $bdPages = @(
+        @{ Name = 'eklenti cekirdek ve arka plan testleri (Edge)'; Path = 'tests/test.html' },
+        @{ Name = 'eklenti icerik betigi testleri (Edge)'; Path = 'tests/login-fixture.html' }
+    )
+    if (-not $lis) { foreach ($pg in $bdPages) { Check $pg.Name $false 'HttpListener baslatilamadi' } }
     else {
-        $bdProc = $null
+        $bdBase = Join-Path $root 'browser'
+        # Tek bekleyen BeginGetContext sayfalar arasinda paylasilir; yoksa onceki sayfadan kalan istek ilk istegi yutar.
+        $ar = $lis.BeginGetContext($null, $null)
         try {
-            $bdBase = Join-Path $root 'browser'
-            $bdArgs = '--headless=new', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--disable-component-update', '--disable-sync', "--user-data-dir=$bdTmp", '--virtual-time-budget=5000', '--dump-dom', "http://127.0.0.1:$bdPort/tests/test.html"
-            $bdProc = Start-Process $edge -ArgumentList $bdArgs -RedirectStandardOutput "$bdTmp.out" -RedirectStandardError "$bdTmp.err" -PassThru -WindowStyle Hidden
-            $ar = $lis.BeginGetContext($null, $null)
-            $sw = [Diagnostics.Stopwatch]::StartNew()
-            while (-not $bdProc.HasExited -and $sw.Elapsed.TotalSeconds -lt 60) {
-                if (-not $ar.AsyncWaitHandle.WaitOne(50)) { continue }
+            foreach ($pg in $bdPages) {
+                $bdProc = $null
+                $pgTmp = "$bdTmp-" + [IO.Path]::GetFileNameWithoutExtension($pg.Path)
                 try {
-                    $ctx = $lis.EndGetContext($ar)
-                } catch { $ar = $lis.BeginGetContext($null, $null); continue }
-                $ar = $lis.BeginGetContext($null, $null)
-                try {
-                    $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath).TrimStart('/') -replace '/', '\'
-                    $file = Join-Path $bdBase $rel
-                    $bytes = [byte[]]@()
-                    if ($rel -eq 'hold') { Start-Sleep -Milliseconds 300 }
-                    elseif ($rel -notmatch '\.\.' -and (Test-Path -LiteralPath $file -PathType Leaf)) {
-                        $bytes = [IO.File]::ReadAllBytes($file)
-                        $ctx.Response.ContentType = if ($rel -like '*.js') { 'text/javascript' } else { 'text/html; charset=utf-8' }
-                    } else { $ctx.Response.StatusCode = 404 }
-                    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length); $ctx.Response.Close()
-                } catch { try { $ctx.Response.Abort() } catch {} }
+                    $bdArgs = '--headless=new', '--disable-gpu', '--no-first-run', '--disable-background-networking', '--disable-component-update', '--disable-sync', "--user-data-dir=$pgTmp", '--virtual-time-budget=5000', '--dump-dom', "http://127.0.0.1:$bdPort/$($pg.Path)"
+                    $bdProc = Start-Process $edge -ArgumentList $bdArgs -RedirectStandardOutput "$pgTmp.out" -RedirectStandardError "$pgTmp.err" -PassThru -WindowStyle Hidden
+                    $sw = [Diagnostics.Stopwatch]::StartNew()
+                    while (-not $bdProc.HasExited -and $sw.Elapsed.TotalSeconds -lt 60) {
+                        if (-not $ar.AsyncWaitHandle.WaitOne(50)) { continue }
+                        try {
+                            $ctx = $lis.EndGetContext($ar)
+                        } catch { $ar = $lis.BeginGetContext($null, $null); continue }
+                        $ar = $lis.BeginGetContext($null, $null)
+                        try {
+                            $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath).TrimStart('/') -replace '/', '\'
+                            $file = Join-Path $bdBase $rel
+                            $bytes = [byte[]]@()
+                            if ($rel -eq 'hold') { Start-Sleep -Milliseconds 300 }
+                            elseif ($rel -notmatch '\.\.' -and (Test-Path -LiteralPath $file -PathType Leaf)) {
+                                $bytes = [IO.File]::ReadAllBytes($file)
+                                $ctx.Response.ContentType = switch -Wildcard ($rel) {
+                                    '*.js'   { 'text/javascript; charset=utf-8' }
+                                    '*.json' { 'application/json; charset=utf-8' }
+                                    '*.png'  { 'image/png' }
+                                    '*.txt'  { 'text/plain; charset=utf-8' }
+                                    '*.css'  { 'text/css; charset=utf-8' }
+                                    default  { 'text/html; charset=utf-8' }
+                                }
+                            } else { $ctx.Response.StatusCode = 404 }
+                            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length); $ctx.Response.Close()
+                        } catch { try { $ctx.Response.Abort() } catch {} }
+                    }
+                    if (-not $bdProc.HasExited) { & taskkill /PID $bdProc.Id /T /F 2>&1 | Out-Null }
+                    $bdProc.WaitForExit(10000) | Out-Null
+                    $bdOut = if (Test-Path -LiteralPath "$pgTmp.out") { (Get-Content -LiteralPath "$pgTmp.out" -Raw -Encoding UTF8) } else { '' }
+                    $m = [regex]::Match("$bdOut", 'id="result">([^<]*)')
+                    Check $pg.Name ("$bdOut" -match 'id="result">PASS') $m.Groups[1].Value
+                    if ($m.Success) { Write-Host "  $($pg.Path): $($m.Groups[1].Value)" }
+                } finally {
+                    if ($bdProc -and -not $bdProc.HasExited) {
+                        & taskkill /PID $bdProc.Id /T /F 2>&1 | Out-Null
+                        $bdProc.WaitForExit(10000) | Out-Null
+                    }
+                    Remove-Item -LiteralPath $pgTmp, "$pgTmp.out", "$pgTmp.err" -Recurse -Force -ErrorAction SilentlyContinue
+                }
             }
-            if (-not $bdProc.HasExited) { & taskkill /PID $bdProc.Id /T /F 2>&1 | Out-Null }
-            $bdProc.WaitForExit(10000) | Out-Null
-            $bdOut = if (Test-Path -LiteralPath "$bdTmp.out") { (Get-Content -LiteralPath "$bdTmp.out" -Raw) } else { '' }
-            $m = [regex]::Match("$bdOut", 'id="result">([^<]*)')
-            Check 'eklenti cekirdek testleri (Edge)' ("$bdOut" -match 'id="result">PASS') $m.Groups[1].Value
         } finally {
-            if ($bdProc -and -not $bdProc.HasExited) {
-                & taskkill /PID $bdProc.Id /T /F 2>&1 | Out-Null
-                $bdProc.WaitForExit(10000) | Out-Null
-            }
             try { $lis.Close() } catch {}
-            Remove-Item -LiteralPath $bdTmp, "$bdTmp.out", "$bdTmp.err" -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
+
+# --- Eklenti ozel anahtari depoya girmemeli ---
+$pemTracked = @(& git -C $root ls-files -- '*.pem' 'android/keystore' 2>$null)
+Check 'eklenti ozel anahtari depoda izlenmiyor' ($pemTracked.Count -eq 0) ($pemTracked -join ', ')
+$pemIgnored = & git -C $root check-ignore -q -- 'android/keystore/cortmed-extension.pem' 2>$null; $pemIgnoredOk = ($LASTEXITCODE -eq 0)
+Check 'eklenti ozel anahtari .gitignore kapsaminda' $pemIgnoredOk ''
 
 if ($fails -gt 0) { Write-Host "FAIL: $fails ek kontrol basarisiz"; exit 1 }
 exit $exeCode

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Cortmed Tarayıcı Koruması",
+  "short_name": "Cortmed",
+  "description": "Aynı ya da sızmış şifreler için uyarır, iki adımlı doğrulamayı hatırlatır, indirilen dosyaları Cortmed Security ile kontrol eder.",
+  "version": "1.0.0",
+  "minimum_chrome_version": "110",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsum1WuNlXsiqFPQ8NIB3+kOaIS2tja/zVAAv9PFyDIO6hpStJxMMuIiIncr1akSeqg1TqeFUQWAWepdpWyU09ciQJsbvHTzPxt/9NHy/OGjlhM/OfuuP/CQhYRzo4YlHyccdzr0olBfJ8WAq4N0mhzkWQWuQ4XuDuRQMVf6cCxKbIiKrXpEfYoqrJRPYMWyF9XsGGDRulaV1rA4vYzJl7JtCniUNHapVaLwoe7GnPqqCswTSm4ngnFZg5ajEVaEWz0zhONAPXXWRC8XcK2Ay9wADPLDmkcZqyx/kTJ69pzhfC35hCQySEYJ8298jl/nsV4Piaae2mt98FCGm39ygwQIDAQAB",
+  "permissions": ["storage", "downloads", "notifications", "nativeMessaging"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["lib/core.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Cortmed Tarayıcı Koruması",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}
