@@ -293,5 +293,24 @@ foreach ($w in 'Install-Guard.ps1', 'Uninstall-Guard.ps1', 'behavior_rules.json'
     Check "paket icerir: $w" ($pkg.Contains($w)) ''
 }
 
+# Install.ps1 bekci kurulum dosyalarini kullanici klasorune de kopyalar (panelden sonra acmak icin)
+Check 'Install.ps1 bekci kaynaklarini kopyalar (guard Core/Service)' ($inst -match "'Core', 'Service'" -and $inst -match 'guard\\\$d') ''
+foreach ($w in 'sysmon-cortmed.xml', 'behavior_rules.json', 'Uninstall-Guard.ps1', 'manifest.sig') {
+    Check "Install.ps1 kopyalar: $w" ($inst.Contains($w)) ''
+}
+Check 'Install.ps1 Install-Guard.ps1''i kullanici klasorune kopyalar' ($inst.Contains('foreach ($f in ''Install-Guard.ps1''')) ''
+
+# --- Tepsi: soru penceresi, bulgular, bekci durumu (ayri powershell, pencere gosterilmez) ---
+$secPath = Join-Path $root 'windows\CortmedSecurity.ps1'
+$tok = $null; $errs = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($secPath, [ref]$tok, [ref]$errs)
+Check 'CortmedSecurity.ps1 ayristirma' ($errs.Count -eq 0) (($errs | ForEach-Object { $_.Message }) -join '; ')
+Check 'CortmedSecurity.ps1 UTF-8 BOM' (((@([IO.File]::ReadAllBytes($secPath) | Select-Object -First 3) -join ',') -eq '239,187,191')) ''
+$trayOut = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tray-tests.ps1') -RepoRoot $root 2>&1 | ForEach-Object { "$_" }
+$trayCode = $LASTEXITCODE
+$trayOut | ForEach-Object { Write-Host $_ }
+$trayFailLines = @($trayOut | Where-Object { $_ -like 'FAIL *' }).Count
+Check 'tepsi testleri (tray-tests.ps1)' ($trayCode -eq 0 -and $trayFailLines -eq 0 -and @($trayOut | Where-Object { $_ -like 'PASS *' }).Count -gt 0) "kod $trayCode, $trayFailLines FAIL"
+
 if ($fails -gt 0) { Write-Host "FAIL: $fails ek kontrol basarisiz"; exit 1 }
 exit $exeCode

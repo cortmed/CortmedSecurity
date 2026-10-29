@@ -42,6 +42,29 @@ if (Test-Path $yara) {
 $yarc = @((Join-Path $src 'windows.yarc'), (Join-Path $src '..\engine\dist\windows.yarc')) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($yarc) { Copy-Item $yarc (Join-Path $dest 'windows.yarc') -Force }
 
+# Davranis bekcisi kurulum dosyalari: panelden sonra acilabilsin (Install-Guard.ps1 -Source <dest>)
+if (Test-Path (Join-Path $src 'guard')) {
+    foreach ($d in 'Core', 'Service') {
+        $from = Join-Path $src "guard\$d"
+        $to = Join-Path $dest "guard\$d"
+        if (-not (Test-Path $from)) { continue }
+        New-Item -ItemType Directory -Force $to | Out-Null
+        # Eski surumden kalan kaynak dosyasi derlemeyi bozmasin
+        Remove-Item (Join-Path $to '*.cs') -Force -ErrorAction SilentlyContinue
+        Copy-Item (Join-Path $from '*.cs') $to -Force
+    }
+    $sx = Join-Path $src 'guard\sysmon-cortmed.xml'
+    if (Test-Path $sx) { Copy-Item $sx (Join-Path $dest 'guard') -Force }
+}
+foreach ($f in 'Install-Guard.ps1', 'Uninstall-Guard.ps1') {
+    if (Test-Path (Join-Path $src $f)) { Copy-Item (Join-Path $src $f) $dest -Force }
+}
+$rules = @((Join-Path $src 'behavior_rules.json'), (Join-Path $src '..\engine\rules\behavior_rules.json')) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($rules) { Copy-Item $rules (Join-Path $dest 'behavior_rules.json') -Force }
+$sigDir = @($src, (Join-Path $src '..\engine\dist')) |
+    Where-Object { (Test-Path (Join-Path $_ 'manifest.json')) -and (Test-Path (Join-Path $_ 'manifest.sig')) } | Select-Object -First 1
+if ($sigDir) { foreach ($f in 'manifest.json', 'manifest.sig') { Copy-Item (Join-Path $sigDir $f) $dest -Force } }
+
 # Logolu baslatici: Windows'ta hazir gelen .NET C# derleyicisiyle uretilir
 $exe = Join-Path $dest 'CortmedSecurity.exe'
 $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'

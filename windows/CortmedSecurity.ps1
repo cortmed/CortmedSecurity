@@ -26,6 +26,8 @@ $ConfigPath = Join-Path $Root 'config.json'
 $StatusPath = Join-Path $DataDir 'status.json'
 $CachePath = Join-Path $DataDir 'filecache.json'
 $LogPath = Join-Path $DataDir 'log.txt'
+# Davranis bekcisi hizmetinin klasoru (ProgramData\Cortmed): tepsi buradan yalnizca okur, asla yazmaz
+$GuardDataDir = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Cortmed'
 New-Item -ItemType Directory -Force $DataDir, $QuarantineDir | Out-Null
 
 $RiskyExtensions = @('.exe', '.scr', '.msi', '.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf',
@@ -1001,9 +1003,55 @@ function Start-ScanProcess {
         '-File', ('"{0}"' -f (Join-Path $Root 'CortmedSecurity.ps1')), '-Mode', 'Daily')
 }
 
+# Davranis bekcisinin bulgulari (findings.json). Dosya yok ya da bozuksa bulgu yok, hata yok.
+function Get-GuardFindings {
+    try {
+        $file = Join-Path $GuardDataDir 'findings.json'
+        if (-not [IO.File]::Exists($file)) { return }
+        $items = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($i in @($items)) {
+            if (-not $i -or -not $i.key -or [string]$i.level -notin 'RED', 'YELLOW') { continue }
+            $f = New-Finding ([string]$i.key) ([string]$i.level) ([string]$i.title) ([string]$i.detail) ([string]$i.path)
+            $f | Add-Member -NotePropertyName tab -NotePropertyValue 'threat'
+            $f | Add-Member -NotePropertyName report -NotePropertyValue ([string]$i.report)
+            $f
+        }
+    } catch { }
+}
+
+# Davranis bekcisi durumu. Tepsideki baglanti varsa Sysmon bilgisi ondan, yoksa isaret dosyalari ve hizmetlerden.
+function Get-GuardStatus($client = $null) {
+    $r = @{ installed = $false; running = $false; sysmonOk = $false; preexisting = $false }
+    try {
+        $svc = Get-Service CortmedGuard -ErrorAction SilentlyContinue
+        $r.installed = [bool]$svc
+        $r.running = [bool]($svc -and $svc.Status -eq 'Running')
+        if ($client -and $client.Connected) {
+            $r.sysmonOk = $client.SysmonOk; $r.preexisting = $client.SysmonPreexisting
+        } else {
+            $r.sysmonOk = [bool](Get-Service Sysmon64, Sysmon -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Running' })
+            $r.preexisting = (Test-Path (Join-Path $GuardDataDir 'sysmon-preexisting')) -and
+                -not (Test-Path (Join-Path $GuardDataDir 'sysmon-installed-by-cortmed'))
+        }
+    } catch { }
+    return $r
+}
+
+# Panel durum kartindaki dorduncu kontrol
+function Get-GuardCheck($gs) {
+    if (-not $gs.installed) { return @{ ok = $false; text = 'Davranış bekçisi kapalı' } }
+    if (-not $gs.running) { return @{ ok = $false; text = 'Davranış bekçisi çalışmıyor' } }
+    if ($gs.preexisting) { return @{ ok = $false; text = 'Sysmon başka bir ayarla çalışıyor' } }
+    if (-not $gs.sysmonOk) { return @{ ok = $false; text = 'Davranış bekçisi tam çalışmıyor' } }
+    return @{ ok = $true; text = 'Davranış bekçisi açık' }
+}
+
 function Get-StatusSummary {
     $s = Read-Json $StatusPath $null
     $all = @(if ($s) { $s.findings | Where-Object { $_ -and $_.level -in 'RED', 'YELLOW' } })
+    $keys = @{}
+    foreach ($f in $all) { $keys[[string]$f.key] = $true }
+    $all += @(Get-GuardFindings | Where-Object { -not $keys.ContainsKey([string]$_.key) })
     [pscustomobject]@{
         status  = $s
         reds    = @($all | Where-Object { $_.level -eq 'RED' })
@@ -1082,6 +1130,25 @@ function Start-Watcher {
     $seen = @{}
     $tries = @{}
 
+    # Davranis bekcisi hizmetine tek baglanti (kendi arka plan okuyucusu var); sorular zamanlayicida alinir
+    $guard = @{ client = $null; state = (New-GuardState) }
+    try { $guard.client = New-Object Cortmed.GuardClient 'CortmedGuard' } catch { Write-Log "Bekci baglantisi kurulamadi: $_" }
+    $guardAnswer = {
+        param($id, $decision)
+        $c = $guard.client
+        if (-not $c -or -not $c.Connected) {
+            Show-Toast 'Cortmed Security' 'Koruma hizmetine şu an ulaşılamadı. Birkaç saniye sonra yeniden deneyin.'
+            return 'keep'
+        }
+        $r = $c.Answer($id, $decision)
+        Write-Log "Bekci sorusu cevaplandi: $id $decision"
+        if ($false -eq $r) {
+            Show-Toast 'Cortmed Security' 'Bu program artık çalışmıyor; bir şey yapmanıza gerek yok.'
+            return $false
+        }
+        return $true
+    }
+
     $updateTray = {
         $sum = Get-StatusSummary
         if ($sum.reds.Count) { $tray.Icon = $iconRed; $line = "Dikkat: $($sum.reds.Count) tehdit bulundu" }
@@ -1110,7 +1177,21 @@ function Start-Watcher {
         if ($state.busy) { return }
         $state.busy = $true
         try {
-            $ready = @($pending.Keys | Where-Object { ((Get-Date) - $pending[$_]).TotalSeconds -ge 1.5 })
+            if ($guard.client) {
+                try {
+                    $pj = $null; $n = 0
+                    while ($n -lt 10 -and $guard.client.TryDequeuePrompt([ref]$pj)) { $n++; [void](Show-GuardPrompt $guard.state $pj $guardAnswer) }
+                    # 10 dakika cevapsiz: kalici bildirim, pencere kapatildiysa yeniden ac
+                    foreach ($id in @(Get-GuardOverdue $guard.state (Get-Date))) {
+                        $name = ''
+                        try { $name = [string]($guard.state.prompts[$id] | ConvertFrom-Json).program } catch { }
+                        $what = if ($name) { "Durdurduğumuz program ($name)" } else { 'Durdurduğumuz program' }
+                        Show-Toast 'Cortmed kararınızı bekliyor' "$what hâlâ bekliyor. Açılan pencereden kapatmayı ya da izin vermeyi seçin." -Sticky
+                        [void](Show-GuardPrompt $guard.state $guard.state.prompts[$id] $guardAnswer)
+                    }
+                } catch { Write-Log "Bekci sorusu hatasi: $_" }
+            }
+            $ready =@($pending.Keys | Where-Object { ((Get-Date) - $pending[$_]).TotalSeconds -ge 1.5 })
             foreach ($file in $ready) {
                 $pending.Remove($file)
                 if ($file -match '\\Karantina\\') { continue }
@@ -1158,6 +1239,7 @@ function Start-Watcher {
     $timer.Start()
     [Windows.Forms.Application]::Run()
     $timer.Stop(); $tray.Visible = $false; $tray.Dispose()
+    if ($guard.client) { try { $guard.client.Dispose() } catch { } }
     foreach ($w in $watchers) { $w.Dispose() }
     $mutex.ReleaseMutex()
 }
@@ -1360,6 +1442,108 @@ function Show-FindingList($owner, [string]$title, $findings) {
     [void]$f.ShowDialog($owner)
 }
 
+# ------------------------------------------------------------------ davranis bekcisi sorusu
+
+# Acik pencereler, cevaplanan sorular ve ilk gorulme zamanlari (soru kimligine gore)
+function New-GuardState {
+    return @{ open = @{}; answered = @{}; firstSeen = @{}; reminded = @{}; prompts = @{} }
+}
+
+# "Bu program durdurulsun mu" penceresini kurar, gostermez.
+# $answer: { param($id, $decision) } -> $false: program artik yok; 'keep': gonderilemedi, pencere acik kalir
+function New-GuardPromptForm($prompt, [scriptblock]$answer, $state = $null) {
+    $name = [string]$prompt.program
+    if (-not $name -and $prompt.path) { $name = Split-Path ([string]$prompt.path) -Leaf }
+    if (-not $name) { $name = 'bilinmeyen program' }
+    $publisher = if ([string]$prompt.publisher) { [string]$prompt.publisher } else { 'bilinmiyor (imzasız)' }
+    $reasons = @($prompt.reasons | Where-Object { $_ } | ForEach-Object { [string]$_ })
+
+    $f = New-DarkForm "Cortmed şüpheli bir programı durdurdu: $name" 640 500
+    $f.StartPosition = 'CenterScreen'; $f.TopMost = $true
+    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+    $f.Tag = @{ id = [string]$prompt.id; answer = $answer; state = $state; decision = $null; result = $null }
+
+    $head = New-Object Windows.Forms.Label
+    $head.Dock = 'Top'; $head.Height = 54; $head.Padding = New-Object Windows.Forms.Padding(16, 0, 0, 0)
+    $head.TextAlign = 'MiddleLeft'; $head.Text = 'Şüpheli bir program durduruldu'
+    $head.Font = New-Font 13 'Bold'
+    $head.ForeColor = [Drawing.Color]::White; $head.BackColor = $UiLevel.RED
+
+    $body = New-Object Windows.Forms.FlowLayoutPanel
+    $body.Dock = 'Fill'; $body.FlowDirection = 'TopDown'; $body.WrapContents = $false; $body.AutoScroll = $true
+    $body.Padding = New-Object Windows.Forms.Padding(18, 14, 18, 4); $body.BackColor = $UiBg
+    $lines = @(
+        (New-Label $name 0 0 $UiText (New-Font 12 'Bold') 570)
+        (New-Label "Yayıncı: $publisher" 0 0 $UiMuted (New-Font 9.5) 570)
+        (New-Label ([string]$prompt.path) 0 0 $UiMuted (New-Font 9) 570)
+        (New-Label 'Cortmed bu programı ve başlattığı programları dondurdu. Siz karar verene kadar hiçbir şey yapamaz.' 0 0 $UiText (New-Font 10) 570)
+        (New-Label 'Neden durduruldu:' 0 0 $UiText (New-Font 10 'Bold') 570)
+    )
+    foreach ($r in $reasons) { $lines += New-Label "•  $r" 0 0 $UiText (New-Font 10) 560 }
+    foreach ($l in $lines) { $l.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 8); [void]$body.Controls.Add($l) }
+
+    $bar = New-Object Windows.Forms.FlowLayoutPanel
+    $bar.Dock = 'Bottom'; $bar.Height = 62; $bar.Padding = New-Object Windows.Forms.Padding(16, 10, 16, 10); $bar.BackColor = $UiBg
+    # Dugmeler kapanis degiskeni kullanmaz: bilgi formun ve dugmenin Tag'inde (pencere sonradan tiklanir)
+    $onChoice = {
+        param($sender, $e)
+        $form = $sender.FindForm(); $t = $form.Tag
+        if ($t.decision) { return }
+        $r = & $t.answer $t.id ([string]$sender.Tag)
+        if ($r -is [array]) { $r = $r[-1] }
+        if ('keep' -eq $r) { return }
+        $t.decision = [string]$sender.Tag; $t.result = $r
+        if ($t.state) { $t.state.answered[$t.id] = $true; $t.state.open.Remove($t.id) }
+        $form.Close()
+    }
+    $kill = New-FlatButton 'Programı kapat (önerilen)' $true
+    $kill.Tag = 'kill'; $kill.Add_Click($onChoice)
+    $allow = New-FlatButton 'İzin ver, devam etsin'
+    $allow.Tag = 'allow'; $allow.Add_Click($onChoice)
+    $more = New-FlatButton 'Ayrıntılar'
+    $report = "Program: $([string]$prompt.path)`r`nYayıncı: $publisher`r`nDavranış puanı: $([string]$prompt.score)`r`n`r`nNedenler:`r`n" +
+        (($reasons | ForEach-Object { "- $_" }) -join "`r`n")
+    $more.Tag = [pscustomobject]@{ key = "guard:$($prompt.id)"; level = 'RED'; title = "Durdurulan program: $name"
+        detail = ($reasons -join ' '); path = [string]$prompt.path; report = $report }
+    $more.Add_Click({ param($sender, $e) [void](Show-Report $sender.FindForm() $sender.Tag) })
+    $bar.Controls.AddRange(@($kill, $allow, $more))
+
+    # Secim yapmadan kapatma: cevap gonderilmez, program donuk kalir
+    $f.Add_FormClosed({ param($sender, $e) $t = $sender.Tag; if ($t.state) { $t.state.open.Remove($t.id) } })
+    $f.Controls.AddRange(@($body, $bar, $head))
+    return $f
+}
+
+# Hizmetten gelen soruyu isler: ayni kimlige ikinci pencere yok, cevaplanan kimlik yok sayilir.
+# Kurulan pencereyi dondurur (gosterilmezse -NoShow), aksi halde $null.
+function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [switch]$NoShow) {
+    $p = $null
+    try { $p = $json | ConvertFrom-Json } catch { return $null }
+    if (-not $p -or -not $p.PSObject.Properties['id'] -or -not [string]$p.id) { return $null }
+    $id = [string]$p.id
+    if ($state.answered.ContainsKey($id)) { return $null }
+    $old = $state.open[$id]
+    if ($old -and -not $old.IsDisposed) { return $null }
+    if (-not $state.firstSeen.ContainsKey($id)) { $state.firstSeen[$id] = Get-Date }
+    $state.prompts[$id] = $json
+    $f = New-GuardPromptForm $p $answer $state
+    $state.open[$id] = $f
+    if (-not $NoShow) { $f.Show(); $f.Activate() }
+    return $f
+}
+
+function Show-GuardPrompt($state, [string]$promptJson, [scriptblock]$answer) {
+    return Receive-GuardPrompt $state $promptJson $answer
+}
+
+# 10 dakikadir cevapsiz sorular; her kimlik icin bir kez doner
+function Get-GuardOverdue($state, [datetime]$now) {
+    foreach ($id in @($state.firstSeen.Keys)) {
+        if ($state.answered.ContainsKey($id) -or $state.reminded.ContainsKey($id)) { continue }
+        if (($now - $state.firstSeen[$id]).TotalMinutes -ge 10) { $state.reminded[$id] = $true; $id }
+    }
+}
+
 # ------------------------------------------------------------------ ayarlar
 
 function Show-Settings($owner) {
@@ -1493,8 +1677,14 @@ $AdviceCategories = @(
         button = 'Listeyi göster' }
 )
 
-function Get-AdviceGroups($advice) {
+# Davranis bekcisi hizmeti kurulu degilse en uste gelen oneri
+$GuardAdvice = @{ id = 'guard'; icon = '🔒'; title = 'Davranış bekçisini açın'
+    text = 'Şüpheli davranan programları (örneğin dosyalarınızı şifrelemeye çalışanları) çalışırken durdurur ve size sorar. Windows bir kez izin ister.'
+    button = 'Bekçiyi aç' }
+
+function Get-AdviceGroups($advice, [bool]$guardMissing = $false) {
     $groups = @()
+    if ($guardMissing) { $groups += [pscustomobject]@{ cat = $GuardAdvice; items = @() } }
     $used = @{}
     foreach ($c in $AdviceCategories) {
         $items = @($advice | Where-Object { ($_.key -split ':')[0] -in $c.prefixes })
@@ -1528,7 +1718,7 @@ function Show-Panel {
     $icon = Get-CortmedIcon; if ($icon) { $form.Icon = $icon }
     $tips = New-Object Windows.Forms.ToolTip
 
-    $state = @{ level = 'NONE'; symbol = '…'; title = ''; sub = ''; tab = ''; checks = @(); scan = $null; harden = $null }
+    $state = @{ level = 'NONE'; symbol = '…'; title = ''; sub = ''; tab = ''; checks = @(); scan = $null; harden = $null; guardSetup = $null }
 
     # Durum karti: halka, baslik, aciklama ve alt satirda koruma kontrolleri
     $status = New-Object Windows.Forms.Panel
@@ -1551,12 +1741,15 @@ function Show-Panel {
         $g.DrawString($state.sub, (New-Font 10), (New-Object Drawing.SolidBrush $UiMuted),
             (New-Object Drawing.RectangleF(144, 64, ($sender.Width - 160), 44)))
         # Koruma kontrolleri: kullanici neyin calistigini gorsun
-        $x = 144
+        $x = 144; $y = 116
         foreach ($chk in $state.checks) {
             $col = if ($chk.ok) { $UiLevel.OK } else { $UiLevel.YELLOW }
             $txt = $(if ($chk.ok) { '✓ ' } else { '! ' }) + $chk.text
-            $g.DrawString($txt, (New-Font 9.5 'Bold'), (New-Object Drawing.SolidBrush $col), $x, 116)
-            $x += [int]$g.MeasureString($txt, (New-Font 9.5 'Bold')).Width + 22
+            $tw = [int]$g.MeasureString($txt, (New-Font 9.5 'Bold')).Width
+            # Sigmazsa alt satira
+            if ($x -gt 144 -and ($x + $tw) -gt ($sender.Width - 12)) { $x = 144; $y += 22 }
+            $g.DrawString($txt, (New-Font 9.5 'Bold'), (New-Object Drawing.SolidBrush $col), $x, $y)
+            $x += $tw + 22
         }
         $g.FillRectangle((New-Object Drawing.SolidBrush $c), 0, 0, 4, $sender.Height)
     })
@@ -1615,7 +1808,8 @@ function Show-Panel {
         $s = $sum.status
         $threats = $sum.threats; $advice = $sum.advice
         if (-not $state.tab) { $state.tab = if ($threats) { 'threat' } else { 'advice' } }
-        $groups = @(Get-AdviceGroups $advice)
+        $guardState = Get-GuardStatus
+        $groups = @(Get-AdviceGroups $advice (-not $guardState.installed))
 
         # Durum karti
         $running = Test-WatcherRunning
@@ -1639,6 +1833,7 @@ function Show-Panel {
             @{ ok = $running; text = $(if ($running) { 'Gerçek zamanlı koruma açık' } else { 'Gerçek zamanlı koruma başlatılıyor' }) }
             @{ ok = $true; text = "Virüs veritabanı: $sigs" }
             @{ ok = [bool](Get-YaraPaths); text = "Tarama: $engines" }
+            (Get-GuardCheck $guardState)
         )
         $card.Invalidate()
 
@@ -1707,6 +1902,22 @@ function Show-Panel {
                         '-File', ('"{0}"' -f (Join-Path $Root 'Harden.ps1')), '-Auto')
                 } catch { }
             }
+            'guard' {
+                $setup = Join-Path $Root 'Install-Guard.ps1'
+                if (-not (Test-Path $setup)) {
+                    [Windows.Forms.MessageBox]::Show('Davranış bekçisinin kurulum dosyaları bulunamadı. Cortmed Security''yi yeniden kurup tekrar deneyin.', 'Cortmed Security') | Out-Null
+                    return
+                }
+                $a = [Windows.Forms.MessageBox]::Show(
+                    "Davranış bekçisi açılacak. Şüpheli davranan bir programı çalışırken durdurur ve ne yapılacağını size sorar.`n`nWindows bir onay penceresi gösterecek. Devam edilsin mi?",
+                    'Davranış bekçisini açın', 'YesNo', 'Question')
+                if ($a -ne 'Yes') { return }
+                # Install-Guard.ps1 kendini yonetici olarak yeniden baslatir (UAC); reddedilirse sessizce biter
+                try {
+                    $state.guardSetup = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
+                        '-File', ('"{0}"' -f $setup), '-Source', ('"{0}"' -f $Root))
+                } catch { }
+            }
             'updates' { Start-Process 'ms-settings:windowsupdate' }
             'account' { Start-Process 'ms-settings:otherusers' }
             default { Show-FindingList $form $grp.cat.title $grp.items; & $render }
@@ -1757,6 +1968,7 @@ function Show-Panel {
         $changed = $false
         if ($state.scan -and $state.scan.HasExited) { $state.scan = $null; $changed = $true }
         if ($state.harden -and $state.harden.HasExited) { $state.harden = $null; & $startScan }
+        if ($state.guardSetup -and $state.guardSetup.HasExited) { $state.guardSetup = $null; $changed = $true }
         if ($changed -or $tick.n % 10 -eq 0) { & $render }
     })
     $timer.Start()
