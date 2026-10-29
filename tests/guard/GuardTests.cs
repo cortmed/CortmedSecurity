@@ -44,8 +44,78 @@ public static class GuardTests
         var r = BehaviorRules.Parse(File.ReadAllText(RepoPath("engine/rules/behavior_rules.json"), Encoding.UTF8));
         Assert(r.FreezeAt == 80 && r.WarnAt == 50 && r.WindowSeconds == 300);
         Assert(r.Points[Behavior.LsassAccess] == 70 && r.Points[Behavior.Persistence] == 35);
-        Assert(r.NeverFreeze.Contains("lsass.exe") && r.NeverFreeze.Contains("explorer.exe"));
+        Assert(r.NeverFreeze.Contains(@"{System32}\lsass.exe") && r.NeverFreeze.Contains(@"{Windows}\explorer.exe"), "tam yol kaliplari");
         Assert(r.Reasons[Behavior.Persistence] == "Kendini açılışa eklemeye çalıştı.");
+    }
+
+    // Depodaki kural dosyasi sozluk olarak; testler alan degistirip yeniden ayristirir.
+    static Dictionary<string, object> RulesDict()
+    {
+        return (Dictionary<string, object>)new System.Web.Script.Serialization.JavaScriptSerializer()
+            .DeserializeObject(File.ReadAllText(RepoPath("engine/rules/behavior_rules.json"), Encoding.UTF8));
+    }
+
+    static string RulesJson(Action<Dictionary<string, object>> change)
+    {
+        var d = RulesDict();
+        change(d);
+        return new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(d);
+    }
+
+    static bool ParseRejects(Action<Dictionary<string, object>> change)
+    {
+        string json = RulesJson(change);
+        try { BehaviorRules.Parse(json); return false; }
+        catch (InvalidDataException) { return true; }
+    }
+
+    [Test] static void RulesRejectMissingKeysAndBehaviors()
+    {
+        foreach (string key in RulesDict().Keys.ToList())
+        {
+            string k = key;
+            Assert(ParseRejects(d => d.Remove(k)), "eksik anahtar reddedilmeli: " + k);
+        }
+        Assert(ParseRejects(d => ((Dictionary<string, object>)d["points"]).Remove("Injection")), "eksik puan");
+        Assert(ParseRejects(d => ((Dictionary<string, object>)d["reasons"]).Remove("MassFileChange")), "eksik neden");
+        Assert(ParseRejects(d => ((Dictionary<string, object>)d["reasons"])["Persistence"] = ""), "bos neden");
+        Assert(ParseRejects(d => d["neverFreeze"] = new object[] { "csrss.exe" }), "yalniz dosya adi (tam yol degil)");
+        Assert(ParseRejects(d => d["trustedImages"] = new object[] { "svchost.exe" }), "guvenilir imaj yalniz ad");
+        Assert(ParseRejects(d => d["trustedImages"] = new object[] { @"{Bogus}\a.exe" }), "bilinmeyen belirtec");
+    }
+
+    [Test] static void RulesRejectOutOfRangeValues()
+    {
+        var bad = new List<KeyValuePair<string, int>>
+        {
+            new KeyValuePair<string, int>("freezeAt", 49), new KeyValuePair<string, int>("freezeAt", 201),
+            new KeyValuePair<string, int>("warnAt", 19), new KeyValuePair<string, int>("warnAt", 80),
+            new KeyValuePair<string, int>("windowSeconds", 29), new KeyValuePair<string, int>("windowSeconds", 3601),
+            new KeyValuePair<string, int>("massFileCount", 9), new KeyValuePair<string, int>("massFileCount", 1001),
+            new KeyValuePair<string, int>("massFileSeconds", 0), new KeyValuePair<string, int>("massFileSeconds", 121),
+        };
+        foreach (var kv in bad)
+        {
+            var c = kv;
+            Assert(ParseRejects(d => d[c.Key] = c.Value), "aralik disi reddedilmeli: " + c.Key + "=" + c.Value);
+        }
+        Assert(ParseRejects(d => ((Dictionary<string, object>)d["points"])["Injection"] = 201), "puan 201");
+        Assert(ParseRejects(d => ((Dictionary<string, object>)d["points"])["Injection"] = -101), "puan -101");
+        Assert(ParseRejects(d => d["freezeAt"] = "seksen"), "sayi degil");
+
+        // sinir degerler kabul
+        var r = BehaviorRules.Parse(RulesJson(d =>
+        {
+            d["freezeAt"] = 50; d["warnAt"] = 49; d["windowSeconds"] = 30; d["massFileCount"] = 10; d["massFileSeconds"] = 1;
+            ((Dictionary<string, object>)d["points"])["Injection"] = -100;
+        }));
+        Assert(r.FreezeAt == 50 && r.WarnAt == 49 && r.Points[Behavior.Injection] == -100, "alt sinirlar");
+        r = BehaviorRules.Parse(RulesJson(d =>
+        {
+            d["freezeAt"] = 200; d["warnAt"] = 20; d["windowSeconds"] = 3600; d["massFileCount"] = 1000; d["massFileSeconds"] = 120;
+            ((Dictionary<string, object>)d["points"])["Injection"] = 200;
+        }));
+        Assert(r.FreezeAt == 200 && r.WarnAt == 20 && r.MassFileSeconds == 120, "ust sinirlar");
     }
 
     [Test] static void RulesRejectUnknownBehaviorName()
@@ -93,6 +163,7 @@ public static class GuardTests
         e.TargetPid = Int(d, "TargetPid");
         e.TargetImage = Str(d, "TargetImage");
         e.Hashes = Str(d, "Hashes");
+        e.GrantedAccess = Str(d, "GrantedAccess");
         return e;
     }
 
@@ -214,9 +285,69 @@ public static class GuardTests
     {
         var e = new GuardEvent();
         e.EventId = 10; e.Pid = 10;
-        e.Image = @"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe";
+        e.Image = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe");
         e.TargetImage = @"C:\Windows\System32\lsass.exe"; e.TargetPid = 700;
-        Assert(new Classifier(Rules()).Classify(e).Count == 0);
+        e.GrantedAccess = "0x1fffff";
+        Assert(new Classifier(Rules()).Classify(e).Count == 0, "Defender");
+        e.Image = Path.Combine(Environment.SystemDirectory, "svchost.exe");
+        Assert(new Classifier(Rules()).Classify(e).Count == 0, "System32 svchost");
+    }
+
+    static GuardEvent LsassOpen(string image, string mask)
+    {
+        var e = new GuardEvent();
+        e.EventId = 10; e.Pid = 10; e.Image = image; e.GrantedAccess = mask;
+        e.TargetImage = @"C:\Windows\System32\lsass.exe"; e.TargetPid = 700;
+        return e;
+    }
+
+    [Test] static void LsassAccessNeedsVmReadInGrantedAccess()
+    {
+        string a = @"C:\Users\x\Downloads\a.exe";
+        var c = new Classifier(Rules());
+        Assert(c.Classify(LsassOpen(a, "0x1000")).Count == 0, "0x1000 (yalniz sorgu) isabet degil");
+        Assert(c.Classify(LsassOpen(a, null)).Count == 0, "maske yok -> isabet degil");
+        Assert(c.Classify(LsassOpen(a, "bozuk")).Count == 0, "okunamayan maske -> isabet degil");
+        Assert(c.Classify(LsassOpen(a, "0x40")).Count == 0, "0x40 VM_READ icermez");
+        foreach (string m in new[] { "0x1010", "0x1410", "0x1fffff", "0x10", "0X143A" })
+        {
+            var h = c.Classify(LsassOpen(a, m));
+            Assert(h.Count == 1 && h[0].Behavior == Behavior.LsassAccess, "isabet olmali: " + m);
+        }
+    }
+
+    [Test] static void RenamedSvchostInDownloadsOpeningLsassScores()
+    {
+        var h = new Classifier(Rules()).Classify(LsassOpen(@"C:\Users\x\Downloads\svchost.exe", "0x1010"));
+        Assert(h.Count == 1 && h[0].Behavior == Behavior.LsassAccess, "Downloads svchost.exe guvenilir sayilmamali");
+        h = new Classifier(Rules()).Classify(LsassOpen(@"C:\Users\x\AppData\Local\Temp\MsMpEng.exe", "0x1010"));
+        Assert(h.Count == 1, "Temp MsMpEng.exe guvenilir sayilmamali");
+        var sb = new ScoreBoard(Rules());
+        Assert(sb.Add(1, 0, h[0], DateTime.Now).Score == Rules().Points[Behavior.LsassAccess], "LSASS puani yazilmali");
+    }
+
+    [Test] static void FakeChromeInDownloadsWritingExtensionIsTamper()
+    {
+        var e = new GuardEvent();
+        e.EventId = 11; e.Pid = 10; e.ParentPid = 1;
+        e.TargetFilename = @"C:\Users\k\AppData\Local\Google\Chrome\User Data\Default\Extensions\abc\bg.js";
+        e.Image = @"C:\Users\k\Downloads\chrome.exe";
+        var hits = new Classifier(Rules()).Classify(e);
+        Assert(hits.Count == 1 && hits[0].Behavior == Behavior.TamperOtherApp, "sahte chrome.exe");
+        e.Image = @"C:\Users\k\AppData\Local\Google\Chrome\Application\chrome.exe";
+        Assert(new Classifier(Rules()).Classify(e).Count == 0, "kullanici kurulumu Chrome");
+    }
+
+    [Test] static void IsDocumentWriteDetectsTurkishFolders()
+    {
+        var e = new GuardEvent();
+        e.EventId = 11;
+        foreach (string f in new[] { @"C:\Users\x\OneDrive\Masaüstü\a.docx", @"C:\Users\x\OneDrive\Belgeler\a.docx",
+            @"C:\Users\x\OneDrive\Resimler\a.jpg", @"C:\Users\x\OneDrive\Videolar\a.mp4", @"C:\Users\x\OneDrive\Müzik\a.mp3" })
+        {
+            e.TargetFilename = f;
+            Assert(Classifier.IsDocumentWrite(e), f);
+        }
     }
 
     [Test] static void IsDocumentWriteDetectsUserFolders()
@@ -466,6 +597,31 @@ public static class GuardTests
         Assert(!ProcessControl.CanFreeze(System.Diagnostics.Process.GetCurrentProcess().Id, Rules()), "kendi sureci");
     }
 
+    [Test] static void NeverFreezeMatchesFullPathWithHardCodedFloor()
+    {
+        string sys = Environment.SystemDirectory;
+        string win = Path.GetDirectoryName(sys);
+        Assert(ProcessControl.CanFreezeImage(@"C:\Users\x\Downloads\csrss.exe", 1, Rules()), "Downloads csrss.exe dondurulabilir");
+        Assert(ProcessControl.CanFreezeImage(@"C:\Users\x\AppData\Local\Temp\explorer.exe", 1, Rules()), "Temp explorer.exe dondurulabilir");
+        Assert(ProcessControl.CanFreezeImage(@"C:\Users\x\Downloads\cortmedguard.exe", 1, Rules()), "Downloads cortmedguard.exe dondurulabilir");
+        // kurallar listeyi bosaltsa bile taban korur
+        var empty = BehaviorRules.Parse(RulesJson(d => d["neverFreeze"] = new object[0]));
+        string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        foreach (string p in new[] { Path.Combine(sys, "smss.exe"), Path.Combine(sys, "csrss.exe"), Path.Combine(sys, "wininit.exe"),
+            Path.Combine(sys, "winlogon.exe"), Path.Combine(sys, "services.exe"), Path.Combine(sys, "lsass.exe"), Path.Combine(win, "explorer.exe"),
+            Path.Combine(sys, "dwm.exe"), Path.Combine(pf, @"Cortmed\CortmedGuard.exe"),
+            Path.Combine(Path.GetPathRoot(sys), @"Users\anne\AppData\Local\CortmedSecurity\CortmedSecurity.exe") })
+        {
+            Assert(!ProcessControl.CanFreezeImage(p, 1, empty), "taban: " + p);
+            Assert(!ProcessControl.CanFreezeImage(p.ToUpperInvariant(), 1, Rules()), "kurallar: " + p);
+        }
+        // imzali kurallar ekleyebilir
+        var more = BehaviorRules.Parse(RulesJson(d => d["neverFreeze"] = new object[] { @"{ProgramFiles}\Foo\foo.exe" }));
+        Assert(!ProcessControl.CanFreezeImage(Path.Combine(pf, @"Foo\foo.exe"), 1, more), "kuralla eklenen");
+        Assert(ProcessControl.CanFreezeImage(Path.Combine(pf, @"Foo\foo.exe"), 1, Rules()), "eklenmemisse dondurulabilir");
+        Assert(!ProcessControl.CanFreezeImage("", 1, Rules()) && !ProcessControl.CanFreezeImage(null, 1, Rules()), "yolu bilinmeyen dondurulmaz");
+    }
+
     [Test] static void FromXmlMapsProcessCreateAndRegistryFields()
     {
         var e1 = SysmonReader.FromXml(File.ReadAllText(RepoPath("tests/guard/fixtures/sysmon-event-1.xml"), Encoding.UTF8));
@@ -483,9 +639,13 @@ public static class GuardTests
     [Test] static void FromXmlMapsSourceTargetFieldsForEvent10()
     {
         string xml = "<Event xmlns=\"http://schemas.microsoft.com/win/2004/08/events/event\"><System><EventID>10</EventID><TimeCreated SystemTime=\"2026-10-29T10:00:00.0000000Z\"/></System><EventData>"
-            + "<Data Name=\"SourceProcessId\">11</Data><Data Name=\"SourceImage\">C:\\a.exe</Data><Data Name=\"TargetProcessId\">22</Data><Data Name=\"TargetImage\">C:\\Windows\\System32\\lsass.exe</Data></EventData></Event>";
+            + "<Data Name=\"SourceProcessId\">11</Data><Data Name=\"SourceImage\">C:\\a.exe</Data><Data Name=\"TargetProcessId\">22</Data><Data Name=\"TargetImage\">C:\\Windows\\System32\\lsass.exe</Data>"
+            + "<Data Name=\"GrantedAccess\">0x1010</Data></EventData></Event>";
         var e = SysmonReader.FromXml(xml);
         Assert(e.EventId == 10 && e.Pid == 11 && e.TargetPid == 22 && e.Image == @"C:\a.exe" && e.TargetImage.EndsWith("lsass.exe"), "olay 10");
+        Assert(e.GrantedAccess == "0x1010", "GrantedAccess: " + e.GrantedAccess);
+        var r = GuardReplay.Parse(new Dictionary<string, object> { { "EventId", 10 }, { "GrantedAccess", "0x1410" } });
+        Assert(r.GrantedAccess == "0x1410", "replay GrantedAccess");
     }
 
     [Test] static void SysmonReaderStartOnMissingLogReportsErrorWithoutThrowing()
@@ -1276,11 +1436,32 @@ public static class GuardTests
         string dir = NewDataDir();
         var c = new FakeControl(); var s = new FakeSink();
         var g = new GuardEngine(Rules(), dir, c, s);
-        var strict = BehaviorRules.Parse(Encoding.UTF8.GetString(RulesBytes(40)));
+        var strict = BehaviorRules.Parse(RulesJson(d => { d["freezeAt"] = 50; d["warnAt"] = 20; }));
         g.UpdateRules(strict);
         var evs = GuardReplay.LoadEvents(RepoPath("tests/guard/replay"));
-        foreach (var e in evs.Take(3)) g.OnEvent(e); // 15 + 35 = 50 >= 40
+        foreach (var e in evs.Take(3)) g.OnEvent(e); // 15 + 35 = 50 >= 50
         Assert(c.Frozen.Count == 1 && s.Sent.Count == 1, "yeni esik kullanilmali");
+    }
+
+    [Test] static void SignedButInvalidRulesFallBackToLastGood()
+    {
+        string dir = NewDataDir(); var k = new TestKey();
+        WriteSignedRules(dir, k, Encoding.UTF8.GetBytes(RulesJson(d => d["freezeAt"] = 30)));
+        var r = RulesStore.LoadTrusted(dir, k.X, k.Y, new GuardLog(Path.Combine(dir, "guard.log")));
+        Assert(r.FreezeAt == 81, "imzali ama gecersiz kural -> .good: " + r.FreezeAt);
+        string dir2 = NewDataDir();
+        WriteSignedRules(dir2, k, Encoding.UTF8.GetBytes(RulesJson(d => d.Remove("neverFreeze"))));
+        Assert(RulesStore.LoadTrusted(dir2, k.X, k.Y, new GuardLog(Path.Combine(dir2, "guard.log"))).FreezeAt == 81, "eksik anahtar -> .good");
+
+        // guncelleme de reddedilir, diskteki kurallar degismez
+        string dir3 = NewDataDir();
+        WriteSignedRules(dir3, k, RulesBytes(77));
+        byte[] bad = Encoding.UTF8.GetBytes(RulesJson(d => d["windowSeconds"] = 5));
+        byte[] m = Manifest(bad);
+        var remote = new Dictionary<string, byte[]> { { "https://x/manifest.json", m }, { "https://x/manifest.sig", k.Sign(m) }, { "https://x/behavior_rules.json", bad } };
+        var log = new GuardLog(Path.Combine(dir3, "guard.log"));
+        Assert(RulesStore.TryUpdate("https://x", dir3, k.X, k.Y, u => remote[u], log) == null, "gecersiz guncelleme reddedilmeli");
+        Assert(RulesStore.LoadTrusted(dir3, k.X, k.Y, log).FreezeAt == 77, "eski kurallar yerinde");
     }
 
     // ---- calistirici ----

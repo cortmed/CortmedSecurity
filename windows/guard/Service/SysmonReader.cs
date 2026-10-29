@@ -86,6 +86,7 @@ namespace Cortmed.Guard
                 ev.Image = Get(data, "SourceImage");
                 ev.TargetPid = ToInt(Get(data, "TargetProcessId"));
                 ev.TargetImage = Get(data, "TargetImage");
+                ev.GrantedAccess = Get(data, "GrantedAccess");
             }
             else
             {

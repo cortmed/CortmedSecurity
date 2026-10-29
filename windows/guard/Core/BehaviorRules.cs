@@ -6,6 +6,9 @@ using System.Web.Script.Serialization;
 
 namespace Cortmed.Guard
 {
+    // Imzali davranis kurallari. Parse eksik ya da aralik disi her degerde InvalidDataException
+    // firlatir; hizmet bu durumda son gecerli kopyaya (.good) doner. Ayni denetimler
+    // engine/sign_db.py'de imzalamadan once yapilir.
     public class BehaviorRules
     {
         public int FreezeAt;
@@ -16,8 +19,12 @@ namespace Cortmed.Guard
         public int TrustedLocationBonus;
         public Dictionary<Behavior, int> Points = new Dictionary<Behavior, int>();
         public Dictionary<Behavior, string> Reasons = new Dictionary<Behavior, string>();
+        // Tam yol kaliplari (PathRules); ProcessControl'deki sabit taban listesine eklenir, onu daraltamaz.
         public HashSet<string> NeverFreeze = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // LSASS'a erisebilen tam yol kaliplari.
         public HashSet<string> TrustedImages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public const int MinPoints = -100, MaxPoints = 200;
 
         public static BehaviorRules Parse(string json)
         {
@@ -35,16 +42,41 @@ namespace Cortmed.Guard
             r.MassFileSeconds = GetInt(root, "massFileSeconds");
             r.TrustedLocationBonus = GetInt(root, "trustedLocationBonus");
 
-            var points = GetDict(root, "points");
-            if (points != null)
-                foreach (var kv in points) r.Points[ParseBehavior(kv.Key)] = ToInt(kv.Value, kv.Key);
-            var reasons = GetDict(root, "reasons");
-            if (reasons != null)
-                foreach (var kv in reasons) r.Reasons[ParseBehavior(kv.Key)] = Convert.ToString(kv.Value);
+            foreach (var kv in GetDict(root, "points")) r.Points[ParseBehavior(kv.Key)] = ToInt(kv.Value, kv.Key);
+            foreach (var kv in GetDict(root, "reasons"))
+            {
+                var s = kv.Value as string;
+                if (string.IsNullOrEmpty(s)) throw new InvalidDataException("'reasons." + kv.Key + "' boş olamaz.");
+                r.Reasons[ParseBehavior(kv.Key)] = s;
+            }
 
-            FillSet(root, "neverFreeze", r.NeverFreeze);
-            FillSet(root, "trustedImages", r.TrustedImages);
+            FillPaths(root, "neverFreeze", r.NeverFreeze);
+            FillPaths(root, "trustedImages", r.TrustedImages);
+            Validate(r);
             return r;
+        }
+
+        static void Validate(BehaviorRules r)
+        {
+            Range("freezeAt", r.FreezeAt, 50, 200);
+            Range("warnAt", r.WarnAt, 20, r.FreezeAt - 1);
+            Range("windowSeconds", r.WindowSeconds, 30, 3600);
+            Range("massFileCount", r.MassFileCount, 10, 1000);
+            Range("massFileSeconds", r.MassFileSeconds, 1, 120);
+            Range("trustedLocationBonus", r.TrustedLocationBonus, MinPoints, MaxPoints);
+            foreach (Behavior b in Enum.GetValues(typeof(Behavior)))
+            {
+                int p;
+                if (!r.Points.TryGetValue(b, out p)) throw new InvalidDataException("'points." + b + "' eksik.");
+                Range("points." + b, p, MinPoints, MaxPoints);
+                if (!r.Reasons.ContainsKey(b)) throw new InvalidDataException("'reasons." + b + "' eksik.");
+            }
+        }
+
+        static void Range(string key, int v, int min, int max)
+        {
+            if (v < min || v > max)
+                throw new InvalidDataException("'" + key + "' " + min + ".." + max + " aralığında olmalı (" + v + ").");
         }
 
         static Behavior ParseBehavior(string name)
@@ -55,35 +87,62 @@ namespace Cortmed.Guard
             return b;
         }
 
-        static Dictionary<string, object> GetDict(Dictionary<string, object> d, string key)
+        static object Require(Dictionary<string, object> d, string key)
         {
             object v;
-            if (!d.TryGetValue(key, out v) || v == null) return null;
-            var res = v as Dictionary<string, object>;
+            if (!d.TryGetValue(key, out v) || v == null) throw new InvalidDataException("'" + key + "' eksik.");
+            return v;
+        }
+
+        static Dictionary<string, object> GetDict(Dictionary<string, object> d, string key)
+        {
+            var res = Require(d, key) as Dictionary<string, object>;
             if (res == null) throw new InvalidDataException("'" + key + "' bir nesne olmalı.");
             return res;
         }
 
         static int GetInt(Dictionary<string, object> d, string key)
         {
-            object v;
-            if (!d.TryGetValue(key, out v) || v == null) return 0;
-            return ToInt(v, key);
+            return ToInt(Require(d, key), key);
         }
 
         static int ToInt(object v, string key)
         {
-            try { return Convert.ToInt32(v); }
+            if (!(v is int || v is long || v is decimal || v is double))
+                throw new InvalidDataException("'" + key + "' sayı olmalı.");
+            try
+            {
+                decimal m = Convert.ToDecimal(v);
+                if (m != decimal.Truncate(m)) throw new InvalidDataException("'" + key + "' tam sayı olmalı.");
+                return Convert.ToInt32(m);
+            }
+            catch (InvalidDataException) { throw; }
             catch (Exception) { throw new InvalidDataException("'" + key + "' sayı olmalı."); }
         }
 
-        static void FillSet(Dictionary<string, object> d, string key, HashSet<string> set)
+        internal static List<string> GetList(Dictionary<string, object> d, string key)
         {
-            object v;
-            if (!d.TryGetValue(key, out v) || v == null) return;
+            object v = Require(d, key);
             var list = v as IEnumerable;
-            if (list == null || v is string) throw new InvalidDataException("'" + key + "' bir liste olmalı.");
-            foreach (object o in list) set.Add(Convert.ToString(o));
+            if (list == null || v is string || v is Dictionary<string, object>) throw new InvalidDataException("'" + key + "' bir liste olmalı.");
+            var res = new List<string>();
+            foreach (object o in list)
+            {
+                var s = o as string;
+                if (string.IsNullOrEmpty(s)) throw new InvalidDataException("'" + key + "' yalnızca dolu metin içermeli.");
+                res.Add(s);
+            }
+            return res;
+        }
+
+        static void FillPaths(Dictionary<string, object> d, string key, HashSet<string> set)
+        {
+            foreach (string s in GetList(d, key))
+            {
+                if (!PathRules.IsValidPattern(s))
+                    throw new InvalidDataException("'" + key + "' tam yol olmalı ({System32}\\... gibi): " + s);
+                set.Add(s);
+            }
         }
     }
 }

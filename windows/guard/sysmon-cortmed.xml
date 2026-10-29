@@ -18,10 +18,14 @@
       <CreateRemoteThread onmatch="exclude" />
     </RuleGroup>
 
-    <!-- Olay 10: lsass.exe erisimi -->
+    <!-- Olay 10: lsass.exe erisimi, yalnizca bellek okuma (PROCESS_VM_READ 0x10) iceren yaygin maskeler.
+         0x1000 gibi yalniz sorgu acilislari (WMI, gorev yoneticisi) kaydedilmez. Siniflandirici ayrica (maske & 0x10) arar. -->
     <RuleGroup name="ProcessAccess" groupRelation="or">
       <ProcessAccess onmatch="include">
-        <TargetImage condition="end with">\lsass.exe</TargetImage>
+        <Rule name="LsassBellekOkuma" groupRelation="and">
+          <TargetImage condition="end with">\lsass.exe</TargetImage>
+          <GrantedAccess condition="is any">0x1010;0x1410;0x1438;0x143a;0x1fffff;0x1f1fff;0x1f3fff;0x40;0x10</GrantedAccess>
+        </Rule>
       </ProcessAccess>
     </RuleGroup>
 

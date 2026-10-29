@@ -280,6 +280,7 @@ namespace Cortmed.Guard
             e.TargetFilename = Str(d, "TargetFilename");
             e.TargetImage = Str(d, "TargetImage");
             e.Hashes = Str(d, "Hashes");
+            e.GrantedAccess = Str(d, "GrantedAccess");
             string t = Str(d, "Time");
             e.Time = string.IsNullOrEmpty(t)
                 ? DateTime.UtcNow

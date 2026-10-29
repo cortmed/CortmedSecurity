@@ -10,14 +10,36 @@ namespace Cortmed.Guard
         static readonly StringComparison OIC = StringComparison.OrdinalIgnoreCase;
 
         static readonly string[] ScriptHosts = { "powershell.exe", "pwsh.exe", "cmd.exe", "mshta.exe", "wscript.exe", "cscript.exe" };
-        static readonly string[] Browsers = { "chrome.exe", "msedge.exe", "brave.exe" };
-        static readonly string[] DocFolders = { "\\Documents\\", "\\Desktop\\", "\\Pictures\\", "\\Videos\\", "\\Music\\" };
+        // Eklenti klasorune yazmasi olagan tarayicilar: yalnizca kurulum yerindeki tam yol (ad yetmez).
+        static readonly string[] BrowserPaths =
+        {
+            @"{ProgramFiles}\Google\Chrome\Application\chrome.exe",
+            @"{ProgramFilesX86}\Google\Chrome\Application\chrome.exe",
+            @"{Users}\*\AppData\Local\Google\Chrome\Application\chrome.exe",
+            @"{ProgramFiles}\Microsoft\Edge\Application\msedge.exe",
+            @"{ProgramFilesX86}\Microsoft\Edge\Application\msedge.exe",
+            @"{ProgramFiles}\BraveSoftware\Brave-Browser\Application\brave.exe",
+            @"{ProgramFilesX86}\BraveSoftware\Brave-Browser\Application\brave.exe",
+            @"{Users}\*\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe"
+        };
+        static readonly string[] DocFolders =
+        {
+            "\\Documents\\", "\\Desktop\\", "\\Pictures\\", "\\Videos\\", "\\Music\\",
+            "\\Belgeler\\", "\\Masaüstü\\", "\\Resimler\\", "\\Videolar\\", "\\Müzik\\"
+        };
+
+        // PROCESS_VM_READ: LSASS'tan sifre okumak icin gereken hak.
+        const long ProcessVmRead = 0x10;
 
         readonly BehaviorRules _rules;
+        readonly KnownFolders _folders;
 
-        public Classifier(BehaviorRules rules)
+        public Classifier(BehaviorRules rules) : this(rules, null) { }
+
+        public Classifier(BehaviorRules rules, KnownFolders folders)
         {
             _rules = rules;
+            _folders = folders ?? KnownFolders.Current;
         }
 
         public List<Hit> Classify(GuardEvent e)
@@ -52,9 +74,9 @@ namespace Cortmed.Guard
             if (e.EventId == 8 && e.Pid != e.TargetPid)
                 Add(hits, Behavior.Injection, e.Pid);
 
-            // LsassAccess
+            // LsassAccess: yalnizca bellek okuma hakki (0x10) iceren acilislar; guvenilirler tam yolla
             if (e.EventId == 10 && e.TargetImage != null && e.TargetImage.EndsWith("\\lsass.exe", OIC)
-                && !_rules.TrustedImages.Contains(FileName(e.Image)))
+                && HasVmRead(e.GrantedAccess) && !PathRules.MatchesAny(_rules.TrustedImages, e.Image, _folders))
                 Add(hits, Behavior.LsassAccess, e.Pid);
 
             return hits;
@@ -65,6 +87,18 @@ namespace Cortmed.Guard
         {
             if (e == null || e.EventId != 11) return false;
             return HasAny(e.TargetFilename, DocFolders);
+        }
+
+        // Sysmon GrantedAccess "0x1010" bicimindedir; yoksa ya da okunamazsa isabet yok sayilir.
+        static bool HasVmRead(string mask)
+        {
+            if (string.IsNullOrEmpty(mask)) return false;
+            string m = mask.Trim();
+            if (!m.StartsWith("0x", OIC) || m.Length < 3) return false;
+            long v;
+            if (!long.TryParse(m.Substring(2), System.Globalization.NumberStyles.AllowHexSpecifier,
+                System.Globalization.CultureInfo.InvariantCulture, out v)) return false;
+            return (v & ProcessVmRead) != 0;
         }
 
         void Add(List<Hit> hits, Behavior b, int pid)
@@ -114,7 +148,7 @@ namespace Cortmed.Guard
             return list;
         }
 
-        static bool IsTamper(GuardEvent e)
+        bool IsTamper(GuardEvent e)
         {
             string t = e.TargetFilename;
             if (t == null) return false;
@@ -122,8 +156,7 @@ namespace Cortmed.Guard
             bool ext = IsExtensionPath(t);
             if (!core && !ext) return false;
 
-            string writer = FileName(e.Image);
-            if (ext && IsOneOf(writer, Browsers)) return false;
+            if (ext && PathRules.MatchesAny(BrowserPaths, e.Image, _folders)) return false;
 
             string a = LocalAppFolder(e.Image);
             string b = LocalAppFolder(t);

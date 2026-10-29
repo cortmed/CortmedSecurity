@@ -27,6 +27,7 @@ namespace Cortmed.Guard
         public int TargetPid;
         public string TargetImage;
         public string Hashes;
+        public string GrantedAccess; // olay 10: Sysmon onaltilik erisim maskesi ("0x1010")
     }
 
     // Pid: puanin yazilacagi surec (cogunlukla olayi yapan, bazen ebeveyn).

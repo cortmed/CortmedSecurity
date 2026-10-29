@@ -1,2 +1,2 @@
-{"event":{"EventId":10,"Pid":4800,"ParentPid":900,"Image":"C:\\Users\\k\\Downloads\\dump.exe","TargetPid":700,"TargetImage":"C:\\Windows\\System32\\lsass.exe"},
+{"event":{"EventId":10,"Pid":4800,"ParentPid":900,"Image":"C:\\Users\\k\\Downloads\\dump.exe","TargetPid":700,"TargetImage":"C:\\Windows\\System32\\lsass.exe","GrantedAccess":"0x1010"},
  "expect":{"behavior":"LsassAccess","pidIs":"self"}}

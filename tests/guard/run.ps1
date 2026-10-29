@@ -56,7 +56,7 @@ if ($xml -ne $null) {
     Check 'sysmon kural bicimi (hepsi=bos exclude, digerleri include)' ($bad.Count -eq 0) ''
 
     function HasCond([string]$el, [string]$field, [string]$val, [string]$mode) {
-        $q = "//RuleGroup/$el[@onmatch='$mode']/$field"
+        $q = "//RuleGroup/$el[@onmatch='$mode']//$field"
         return (@($xml.SelectNodes($q) | Where-Object { $_.InnerText -eq $val }).Count -gt 0)
     }
     $want = @(
@@ -79,7 +79,17 @@ if ($xml -ne $null) {
     foreach ($w in $want) {
         Check "sysmon $($w[0]) $($w[3]) $($w[2])" (HasCond $w[0] $w[1] $w[2] $w[3]) ''
     }
-    Check 'sysmon HashAlgorithms SHA256' ($xml.DocumentElement.SelectSingleNode('HashAlgorithms').InnerText -eq 'SHA256') ''
+    # Olay 10: lsass hedefi VE bellek okuma iceren maskeler ayni "and" kuralinda
+    $lr = $xml.SelectSingleNode("//RuleGroup/ProcessAccess[@onmatch='include']/Rule[@groupRelation='and']")
+    $ga = if ($lr) { $lr.SelectSingleNode("GrantedAccess[@condition='is any']") } else { $null }
+    $gaList = if ($ga) { @($ga.InnerText -split ';') } else { @() }
+    Check 'sysmon ProcessAccess: lsass + GrantedAccess ayni and kuralinda' ($lr -ne $null -and $lr.SelectSingleNode("TargetImage[.='\lsass.exe']") -ne $null -and $ga -ne $null) ''
+    foreach ($m in '0x1010','0x1410','0x1438','0x143a','0x1fffff','0x1f1fff','0x1f3fff','0x40','0x10') {
+        Check "sysmon GrantedAccess $m" ($gaList -contains $m) ($gaList -join ';')
+    }
+    Check 'sysmon GrantedAccess 0x1000 (yalniz sorgu) yok' ($gaList -notcontains '0x1000') ''
+    Check 'sysmon ProcessAccess: kural disi kosul yok' (@($xml.SelectNodes("//RuleGroup/ProcessAccess/*[local-name()!='Rule']")).Count -eq 0) ''
+    Check 'sysmon HashAlgorithms SHA256'($xml.DocumentElement.SelectSingleNode('HashAlgorithms').InnerText -eq 'SHA256') ''
     Check 'sysmon genis Windows Defender kurali yok' (-not (HasCond 'RegistryEvent' 'TargetObject' '\Windows Defender\' 'include')) ''
 }
 
@@ -121,6 +131,57 @@ if (-not $cryptoOk) {
     } finally {
         $env:DB_SIGNING_KEY = $savedKey
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# --- sign_db.py davranis kurali denetimi (BehaviorRules.Parse ile ayni kurallar; cryptography gerekmez) ---
+if (-not $py) {
+    Write-Host 'SKIP sign_db kural denetimi (python yok)'
+} else {
+    $rt = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-rulecheck-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $rt | Out-Null
+    try {
+        $signDb = Join-Path $root 'engine\sign_db.py'
+        $rulesPath = Join-Path $root 'engine\rules\behavior_rules.json'
+        & python $signDb --check-rules $rulesPath | Out-Null
+        Check 'sign_db --check-rules: depodaki kurallar gecerli' ($LASTEXITCODE -eq 0) "kod $LASTEXITCODE"
+        $variants = [ordered]@{
+            'freezeAt eksik'          = { param($j) $j.PSObject.Properties.Remove('freezeAt') }
+            'freezeAt 49'             = { param($j) $j.freezeAt = 49 }
+            'freezeAt 201'            = { param($j) $j.freezeAt = 201 }
+            'warnAt >= freezeAt'      = { param($j) $j.warnAt = $j.freezeAt }
+            'warnAt 19'               = { param($j) $j.warnAt = 19 }
+            'windowSeconds 29'        = { param($j) $j.windowSeconds = 29 }
+            'massFileCount 1001'      = { param($j) $j.massFileCount = 1001 }
+            'massFileSeconds 0'       = { param($j) $j.massFileSeconds = 0 }
+            'puan 201'                = { param($j) $j.points.Injection = 201 }
+            'puan eksik'              = { param($j) $j.points.PSObject.Properties.Remove('Injection') }
+            'neden eksik'             = { param($j) $j.reasons.PSObject.Properties.Remove('LsassAccess') }
+            'neverFreeze yalniz ad'   = { param($j) $j.neverFreeze = @('csrss.exe') }
+            'neverFreeze eksik'       = { param($j) $j.PSObject.Properties.Remove('neverFreeze') }
+        }
+        $n = 0
+        foreach ($name in $variants.Keys) {
+            $n++
+            $j = Get-Content $rulesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            & $variants[$name] $j
+            $f = Join-Path $rt "bad$n.json"
+            [IO.File]::WriteAllText($f, ($j | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+            & python $signDb --check-rules $f | Out-Null
+            Check "sign_db --check-rules reddeder: $name" ($LASTEXITCODE -ne 0) "kod $LASTEXITCODE"
+        }
+        # Imzalama da gecersiz kuralla basarisiz olur ve manifest yazmaz
+        $bd = Join-Path $rt 'dist'
+        New-Item -ItemType Directory -Force $bd | Out-Null
+        Copy-Item (Join-Path $rt 'bad2.json') (Join-Path $bd 'behavior_rules.json')
+        $savedKey2 = $env:DB_SIGNING_KEY
+        $env:DB_SIGNING_KEY = 'gecersiz'
+        try { $so = & python $signDb --dist $bd | Out-String; $sc = $LASTEXITCODE } finally { $env:DB_SIGNING_KEY = $savedKey2 }
+        Check 'sign_db gecersiz kuralla imzalamaz' ($sc -ne 0 -and $so -match 'behavior_rules\.json gecersiz' -and -not (Test-Path (Join-Path $bd 'manifest.json'))) "kod $sc $so"
+    } catch {
+        Check 'sign_db kural denetimi calistirma' $false $_.Exception.Message
+    } finally {
+        Remove-Item $rt -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
