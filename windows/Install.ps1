@@ -165,7 +165,7 @@ try {
     }
     Write-Host '  [OK] Tarayıcı koruması hazır; eklentiyi panelden "Nasıl eklenir?" ile tarayıcınıza ekleyin' -ForegroundColor Green
 } catch {
-    Write-Host "  Tarayıcı koruması hazırlanamadı; panelden sonra yeniden kurabilirsiniz ($($_.Exception.Message))" -ForegroundColor Yellow
+    Write-Host "  Tarayıcı koruması hazırlanamadı; Kur.bat dosyasını yeniden çalıştırarak tekrar deneyebilirsiniz ($($_.Exception.Message))" -ForegroundColor Yellow
 }
 
 function Start-Cortmed([string]$mode) {
