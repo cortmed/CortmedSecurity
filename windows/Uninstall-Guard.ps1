@@ -17,11 +17,12 @@ $svcName = 'CortmedGuard'
 $sc = Join-Path $sysDir 'sc.exe'
 $cmd = Join-Path $sysDir 'cmd.exe'
 
-# --- Klasor guveni. AYNI uc fonksiyon Uninstall-Guard.ps1'de de var (ayri dosya yerine kopya;
+# --- Klasor guveni. AYNI uc fonksiyon Install-Guard.ps1'de de var (ayri dosya yerine kopya;
 #     test ikisinin ayni oldugunu denetler). Degistirirseniz ikisini birlikte degistirin. ---
 # Guvenilir: dizin, baglanti (reparse point) degil, sahibi SYSTEM veya Administrators, DACL korumali
 # ve SYSTEM/Administrators disinda hicbir SID'e yazma izni yok. Hepsi TEK bir tutamactan okunur;
-# tutamac FILE_SHARE_DELETE vermeden acik tutuldugu surece klasor yeniden adlandirilamaz/degistirilemez.
+# Tutamac FILE_LIST_DIRECTORY (veri erisim hakki) ile ve FILE_SHARE_DELETE vermeden acilir; boylece paylasim
+# denetimi uygulanir ve tutamac acik kaldikca klasor yeniden adlandirilamaz/silinemez (sabitlenir).
 function Add-DirTrustType {
     if ('CortmedSetup.DirTrust' -as [type]) { return }
     Add-Type -TypeDefinition @'
@@ -34,7 +35,7 @@ namespace CortmedSetup
 {
     public static class DirTrust
     {
-        const uint READ_CONTROL = 0x00020000, FILE_READ_ATTRIBUTES = 0x80;
+        const uint READ_CONTROL = 0x00020000, FILE_READ_ATTRIBUTES = 0x80, FILE_LIST_DIRECTORY = 0x1;
         const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, OPEN_EXISTING = 3;
         const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000, FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
         const uint ATTR_DIRECTORY = 0x10, ATTR_REPARSE = 0x400;
@@ -89,7 +90,7 @@ namespace CortmedSetup
         // Guvenilirse acik tutamac (cagiran kapatir), degilse null ve neden.
         public static SafeFileHandle OpenTrusted(string path, out string reason)
         {
-            SafeFileHandle h = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero,
+            SafeFileHandle h = CreateFileW(path, FILE_LIST_DIRECTORY | READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero,
                 OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
             if (h.IsInvalid) { reason = "acilamadi (" + Marshal.GetLastWin32Error() + ")"; h.Dispose(); return null; }
             reason = Check(h);
@@ -136,7 +137,8 @@ function Open-TrustedDir([string]$dir) {
 
 # Guvenilmeyen girdiyi tek yeniden adlandirmayla kenara alir; yeni adi dondurur.
 function Move-Aside([string]$dir) {
-    $to = '{0}.untrusted-{1}' -f $dir, (Get-Date -Format 'yyyyMMddHHmmss')
+    # Zaman + rastgele ek: yeniden denemelerde ad cakismaz
+    $to = '{0}.untrusted-{1}-{2}' -f $dir, (Get-Date -Format 'yyyyMMddHHmmss'), [Guid]::NewGuid().ToString('N').Substring(0, 8)
     [CortmedSetup.DirTrust]::MoveAside($dir, $to)
     return $to
 }

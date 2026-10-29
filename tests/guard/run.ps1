@@ -228,7 +228,7 @@ if ($loaded) {
         $aside = $null; $err = ''
         try { $aside = Move-Aside $victim } catch { $err = $_.Exception.Message }
         Check 'Move-Aside: ozgun ad bosaldi' (-not (Test-Path $victim)) $err
-        Check 'Move-Aside: .untrusted-<zaman> adiyla tasindi' ($aside -and $aside -like "$victim.untrusted-*" -and (Test-Path (Join-Path $aside 'sysmon-installed-by-cortmed'))) "$aside"
+        Check 'Move-Aside: .untrusted-<zaman>-<8 hex> adiyla tasindi' ($aside -and $aside -match ([regex]::Escape($victim) + '\.untrusted-\d{14}-[0-9a-f]{8}$') -and (Test-Path (Join-Path $aside 'sysmon-installed-by-cortmed'))) "$aside"
         Check 'Move-Aside: junction hedefine dokunulmadi' ((Test-Path (Join-Path $target 'keep.txt')) -and (Test-Path (Join-Path $aside 'link\keep.txt'))) ''
         $err = ''
         $aside2 = $null
