@@ -44,6 +44,40 @@
     return toHex(d).toUpperCase();
   }
 
+  // Ayni hesabin birden cok alan adi tek site sayilir. Kaynak: mfa-sites.json'daki her domains dizisi + bu tablo.
+  // Her grubun ilk alan adi kanonik addir; buradaki ilk adlar listedekiyle aynidir (liste yuklenemese de ayni kayit).
+  const EXTRA_ALIASES = [
+    ['steampowered.com', 'steamcommunity.com'],
+    ['garantibbva.com.tr', 'garanti.com.tr'],
+    ['microsoft.com', 'live.com', 'microsoftonline.com', 'outlook.com'],
+    ['google.com', 'youtube.com']
+  ];
+
+  function aliasMap(sites) {
+    const map = {};
+    const groups = [];
+    (Array.isArray(sites) ? sites : []).forEach(function (s) { if (s && Array.isArray(s.domains)) groups.push(s.domains); });
+    EXTRA_ALIASES.forEach(function (g) { groups.push(g); });
+    groups.forEach(function (g) {
+      const ds = g.map(function (d) { return String(d || '').toLowerCase(); }).filter(Boolean);
+      if (!ds.length) return;
+      let canon = null;
+      ds.forEach(function (d) { if (!canon && map[d]) canon = map[d]; });
+      if (!canon) canon = ds[0];
+      // Gruplar kesisirse birlesir
+      const old = ds.map(function (d) { return map[d]; }).filter(function (c) { return c && c !== canon; });
+      Object.keys(map).forEach(function (k) { if (old.indexOf(map[k]) >= 0) map[k] = canon; });
+      ds.forEach(function (d) { map[d] = canon; });
+    });
+    return map;
+  }
+
+  // site: eTLD+1. Donus: grubun kanonik adi ya da sitenin kendisi.
+  function canonicalSite(site, sites) {
+    const s = etld1(site);
+    return aliasMap(sites)[s] || s;
+  }
+
   // Ayni sitede parola degisirse eski fp'den cikarilir.
   function recordUse(index, fp, site) {
     const next = {};
@@ -171,7 +205,7 @@
   async function handlePwSubmit(msg, deps) {
     const empty = { reuse: [], leaked: 0 };
     const run = deps.serial || direct;
-    const site = etld1(msg && msg.site);
+    const site = canonicalSite(msg && msg.site, deps.sites);
     let password = msg && typeof msg.password === 'string' ? msg.password : '';
     if (!site || !password || skipSecret(password)) return empty;
     const salt = await run(function () { return getSalt(deps); });
@@ -210,7 +244,7 @@
   }
 
   async function handleReuseMute(msg, deps) {
-    const site = etld1(msg && msg.site);
+    const site = canonicalSite(msg && msg.site, deps.sites);
     if (!site) return { ok: false };
     const st = await deps.store.get(['noReuseWarn']);
     const m = st.noReuseWarn || {};
@@ -219,11 +253,16 @@
     return { ok: true };
   }
 
+  // hosts varsa (genis alan adlari: Google, Microsoft, Apple) yalnizca o hesap adresleri eslesir; yoksa domains (eTLD+1).
   function findMfaSite(sites, hostname) {
-    const d = etld1(hostname);
+    const h = String(hostname || '').toLowerCase().replace(/\.$/, '');
+    const d = etld1(h);
     if (!d || !Array.isArray(sites)) return null;
     for (let i = 0; i < sites.length; i++) {
-      if (sites[i] && Array.isArray(sites[i].domains) && sites[i].domains.indexOf(d) >= 0) return sites[i];
+      const s = sites[i];
+      if (!s) continue;
+      if (Array.isArray(s.hosts)) { if (s.hosts.indexOf(h) >= 0) return s; continue; }
+      if (Array.isArray(s.domains) && s.domains.indexOf(d) >= 0) return s;
     }
     return null;
   }
@@ -349,6 +388,8 @@
     const host = senderHost(sender);
     if (!host) return null;
     const site = etld1(host);
+    // Bekleyen kart eslesmesi icin hesap grubu (ek tablo; es zamanli): garanti.com.tr -> garantibbva.com.tr ayni site
+    const cardSite = canonicalSite(site);
     const tabId = sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : -1;
     const run = deps.serial || direct;
     const empty = { reuse: [], leaked: 0 };
@@ -375,12 +416,15 @@
         const work = (async function () {
           const allowed = await run(function () { return rateAllow(deps, site); });
           if (!allowed) { password = null; return empty; }
+          let sites = [];
+          try { sites = deps.loadSites ? await deps.loadSites() : []; } catch (e) { sites = []; }
           // Sayfa gonderimle kapanirsa yeni sayfa sonucu bekleyen karttan alir: ayni-sifre sonucu hemen yazilir.
           const job = handlePwSubmit({ site: host, password: password }, Object.assign({}, deps, {
+            sites: sites,
             onEarly: function (e) {
               early = e;
               if (!hasCards(e)) return undefined;
-              return pendingUpdate(function (p) { p[tabId] = { id: id, site: site, result: e, t: deps.now() }; });
+              return pendingUpdate(function (p) { p[tabId] = { id: id, site: cardSite, result: e, t: deps.now() }; });
             }
           }));
           password = null;
@@ -391,8 +435,8 @@
               if (hasCards(r)) { cur.result = r; cur.t = deps.now(); } else delete p[tabId];
             } else if (!cur) {
               // Erken kart alindiysa yalnizca sonradan gelen sizinti eklenir.
-              if (!hasCards(early)) { if (hasCards(r)) p[tabId] = { id: id, site: site, result: r, t: deps.now() }; }
-              else if (r.leaked > 0 && !(early.leaked > 0)) p[tabId] = { id: id, site: site, result: { reuse: [], leaked: r.leaked }, t: deps.now() };
+              if (!hasCards(early)) { if (hasCards(r)) p[tabId] = { id: id, site: cardSite, result: r, t: deps.now() }; }
+              else if (r.leaked > 0 && !(early.leaked > 0)) p[tabId] = { id: id, site: cardSite, result: { reuse: [], leaked: r.leaked }, t: deps.now() };
             }
           });
           return r;
@@ -416,14 +460,16 @@
             const e = p[tabId];
             delete p[tabId];
             if (!e || !(deps.now() - e.t < PENDING_MS)) return null;
-            if (e.site === site) return e.result;
+            if (e.site === cardSite) return e.result;
             // Giristen sonra ayni sekmede baska siteye yonlenildi: kart ilk siteyi adlandirir.
             return Object.assign({}, e.result, { from: e.site });
           });
         });
       }
       case 'reuseMute':
-        return run(function () { return handleReuseMute({ site: host }, deps); });
+        return Promise.resolve(deps.loadSites ? deps.loadSites() : []).then(function (sites) {
+          return run(function () { return handleReuseMute({ site: host }, Object.assign({}, deps, { sites: sites })); });
+        });
       case 'mfaCheck':
         return Promise.resolve(deps.loadSites()).then(function (sites) {
           return run(function () { return handleMfaCheck({ site: host }, Object.assign({}, deps, { sites: sites })); });
@@ -450,6 +496,6 @@
     handlePwSubmit: handlePwSubmit, handleReuseMute: handleReuseMute, findMfaSite: findMfaSite,
     handleMfaCheck: handleMfaCheck, handleMfaAnswer: handleMfaAnswer, mfaLabel: mfaLabel,
     downloadNotice: downloadNotice, downloadOutcome: downloadOutcome,
-    senderHost: senderHost, routeMessage: routeMessage, skipSecret: skipSecret
+    senderHost: senderHost, routeMessage: routeMessage, skipSecret: skipSecret, canonicalSite: canonicalSite
   };
 })(self);

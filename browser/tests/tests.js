@@ -201,6 +201,39 @@ async function backgroundLogic(L, assertEq) {
   r = await L.handlePwSubmit({ site: 'c.com', password: 'Ortak-Sifre-1' }, d2);
   assertEq('pw other site still warns', r.reuse.slice().sort(), ['a.com', 'b.com']);
 
+  // Ayni hesabin alan adlari tek site sayilir (MFA listesindeki domains + ek tablo)
+  const aliasSites = [
+    { id: 'steam', name: 'Steam', domains: ['steampowered.com', 'steamcommunity.com'], url: 'https://help.steampowered.com/x' },
+    { id: 'apple', name: 'Apple', domains: ['apple.com', 'icloud.com'], hosts: ['appleid.apple.com'], url: 'https://support.apple.com/x' }
+  ];
+  st = fakeStore(); ff = fakeFetch(miss);
+  const da = { store: st, fetch: ff, now: function () { return T; }, sites: aliasSites };
+  await L.handlePwSubmit({ site: 'store.steampowered.com', password: 'Oyun-Sifre-1' }, da);
+  r = await L.handlePwSubmit({ site: 'steamcommunity.com', password: 'Oyun-Sifre-1' }, da);
+  assertEq('alias steam two domains no warning', r.reuse, []);
+  r = await L.handlePwSubmit({ site: 'discord.com', password: 'Oyun-Sifre-1' }, da);
+  assertEq('alias other site still warns, canonical name', r.reuse, ['steampowered.com']);
+  await L.handlePwSubmit({ site: 'www.icloud.com', password: 'Elma-1' }, da);
+  assertEq('alias from mfa domains (apple/icloud)', (await L.handlePwSubmit({ site: 'apple.com', password: 'Elma-1' }, da)).reuse, []);
+  // Ek tablo listesiz de calisir
+  st = fakeStore(); ff = fakeFetch(miss);
+  const dx = { store: st, fetch: ff, now: function () { return T; } };
+  for (const pair of [['steamcommunity.com', 'steampowered.com'], ['garanti.com.tr', 'garantibbva.com.tr'],
+    ['login.live.com', 'login.microsoftonline.com'], ['outlook.com', 'account.microsoft.com'], ['www.youtube.com', 'accounts.google.com']]) {
+    const pw = 'Ek-' + pair[0];
+    await L.handlePwSubmit({ site: pair[0], password: pw }, dx);
+    assertEq('alias extra ' + pair.join('~'), (await L.handlePwSubmit({ site: pair[1], password: pw }, dx)).reuse, []);
+  }
+  assertEq('alias unrelated', L.canonicalSite('example.com', aliasSites), 'example.com');
+  assertEq('alias canonical first domain', [L.canonicalSite('steamcommunity.com', aliasSites), L.canonicalSite('garanti.com.tr'), L.canonicalSite('youtube.com'), L.canonicalSite('outlook.com')],
+    ['steampowered.com', 'garantibbva.com.tr', 'google.com', 'microsoft.com']);
+  // "Bir daha gösterme" de grup icin
+  st = fakeStore(); ff = fakeFetch(miss);
+  const dm = { store: st, fetch: ff, now: function () { return T; }, sites: aliasSites };
+  await L.handlePwSubmit({ site: 'discord.com', password: 'Sessiz-1' }, dm);
+  await L.handleReuseMute({ site: 'steamcommunity.com' }, dm);
+  assertEq('alias mute applies to group', (await L.handlePwSubmit({ site: 'store.steampowered.com', password: 'Sessiz-1' }, dm)).reuse, []);
+
   // Bozuk tuz yeniden üretilir
   st = fakeStore({ salt: 'bozuk' });
   await L.handlePwSubmit({ site: 'a.com', password: 'x1' }, { store: st, fetch: fakeFetch(miss), now: function () { return T; } });
@@ -214,6 +247,12 @@ async function backgroundLogic(L, assertEq) {
   assertEq('mfa find sub', (L.findMfaSite(sites, 'canary.discord.com') || {}).id, 'discord');
   assertEq('mfa find tr', (L.findMfaSite(sites, 'www.google.com.tr') || {}).id, 'google');
   assertEq('mfa find none', L.findMfaSite(sites, 'notdiscord.com'), null);
+  // hosts varsa domains yerine yalnizca o hesap adresleri eslesir
+  const hsites = [{ id: 'g', name: 'G', domains: ['g.com'], hosts: ['accounts.g.com'], url: 'https://g.com/h' }];
+  assertEq('mfa hosts override domain', [L.findMfaSite(hsites, 'www.g.com'), L.findMfaSite(hsites, 'g.com')], [null, null]);
+  assertEq('mfa hosts exact host', (L.findMfaSite(hsites, 'accounts.g.com') || {}).id, 'g');
+  assertEq('mfa hosts case/trailing dot', (L.findMfaSite(hsites, 'ACCOUNTS.G.COM.') || {}).id, 'g');
+  assertEq('mfa hosts no sub-subdomain', L.findMfaSite(hsites, 'x.accounts.g.com'), null);
 
   let now = T;
   st = fakeStore();
@@ -530,6 +569,19 @@ async function routerTests(L, assertEq, sites, miss, PWSFX) {
   assertEq('route mfaAnswer from sender', [d.store.data.mfa.discord.status, d.store.data.mfa.google], ['ok', undefined]);
   await L.routeMessage({ type: 'reuseMute', site: 'bank.com' }, snd('https://evil.com/'), d);
   assertEq('route reuseMute from sender', d.store.data.noReuseWarn, { 'evil.com': true });
+
+  // Yonlendirici: alias grubu listeden (loadSites) gelir
+  d = mk();
+  d.loadSites = async function () { return [{ id: 'k', name: 'K', domains: ['kedi.com', 'kedi-giris.com'], url: 'https://kedi.com/x' }]; };
+  await L.routeMessage({ type: 'pwSubmit', password: 'Kedi-Ortak-1' }, snd('https://kedi.com/'), d);
+  r = await L.routeMessage({ type: 'pwSubmit', password: 'Kedi-Ortak-1' }, snd('https://www.kedi-giris.com/'), d);
+  assertEq('route alias from loaded list', r.reuse, []);
+  r = await L.routeMessage({ type: 'pwSubmit', password: 'Kedi-Ortak-1' }, snd('https://baska.com/'), d);
+  assertEq('route alias other site warns', r.reuse, ['kedi.com']);
+  // Grup ici yonlendirme ayni site sayilir (from yok)
+  d = mk(PWSFX + ':77\r\n');
+  await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://www.garanti.com.tr/'), d);
+  assertEq('route pending alias redirect same site', await L.routeMessage({ type: 'pendingCards' }, snd('https://www.garantibbva.com.tr/'), d), { reuse: [], leaked: 77 });
 }
 
 // --- Eklenti dosyalari: manifest, kimlik, MFA listesi ---
@@ -629,8 +681,28 @@ async function extensionFiles(L, assertEq) {
     ids[s.id] = true;
     if (s.url.indexOf('https://') !== 0) bad.push('url ' + s.id);
     s.domains.forEach(function (d) { if (L.etld1(d) !== d) bad.push('domain ' + d); });
+    if (s.hosts !== undefined) {
+      if (!Array.isArray(s.hosts) || !s.hosts.length) bad.push('hosts ' + s.id);
+      else s.hosts.forEach(function (h) {
+        if (typeof h !== 'string' || h !== h.toLowerCase() || s.domains.indexOf(L.etld1(h)) < 0) bad.push('host ' + h);
+      });
+    }
   });
   assertEq('mfa-sites entries valid', bad, []);
-  const need = ['discord.com', 'google.com', 'turkiye.gov.tr', 'ziraatbank.com.tr', 'enpara.com', 'whatsapp.com', 'x.com', 'steampowered.com'];
+  const need = ['discord.com', 'turkiye.gov.tr', 'ziraatbank.com.tr', 'enpara.com', 'whatsapp.com', 'x.com', 'steampowered.com'];
   assertEq('mfa-sites key domains', need.filter(function (d) { return !L.findMfaSite(sites, 'www.' + d); }), []);
+  // Genis alan adlari: yalnizca hesap sayfalarinda kart (aramada ve videoda degil)
+  const acct = { 'accounts.google.com': 'google', 'myaccount.google.com': 'google', 'mail.google.com': 'google',
+    'login.live.com': 'microsoft', 'account.microsoft.com': 'microsoft', 'outlook.live.com': 'microsoft',
+    'appleid.apple.com': 'apple', 'account.apple.com': 'apple' };
+  assertEq('mfa-sites account hosts match', Object.keys(acct).filter(function (h) { return (L.findMfaSite(sites, h) || {}).id !== acct[h]; }), []);
+  const quiet = ['www.google.com', 'google.com', 'www.google.com.tr', 'www.youtube.com', 'm.youtube.com', 'www.microsoft.com',
+    'www.bing.com', 'www.apple.com', 'www.icloud.com', 'support.google.com'];
+  assertEq('mfa-sites broad domains quiet', quiet.filter(function (h) { return L.findMfaSite(sites, h) !== null; }), []);
+  // Ek alias tablosunun kanonik adi listeninkiyle ayni (liste yuklenemese de ayni kayit)
+  const extraDomains = ['steampowered.com', 'steamcommunity.com', 'garanti.com.tr', 'garantibbva.com.tr', 'live.com',
+    'microsoftonline.com', 'microsoft.com', 'outlook.com', 'google.com', 'youtube.com'];
+  assertEq('alias canonical same with/without list', extraDomains.filter(function (x) { return L.canonicalSite(x, sites) !== L.canonicalSite(x); }), []);
+  assertEq('alias list groups', [L.canonicalSite('hotmail.com', sites), L.canonicalSite('gmail.com', sites), L.canonicalSite('twitter.com', sites)],
+    ['microsoft.com', 'google.com', 'x.com']);
 }

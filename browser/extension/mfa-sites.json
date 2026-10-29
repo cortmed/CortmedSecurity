@@ -1,7 +1,7 @@
 [
-  { "id": "google", "name": "Google", "domains": ["google.com", "google.com.tr", "gmail.com", "youtube.com"], "url": "https://support.google.com/accounts/answer/185839?hl=tr" },
-  { "id": "microsoft", "name": "Microsoft / Outlook", "domains": ["microsoft.com", "live.com", "outlook.com", "office.com", "microsoftonline.com", "hotmail.com"], "url": "https://support.microsoft.com/tr-tr/help/12408" },
-  { "id": "apple", "name": "Apple", "domains": ["apple.com", "icloud.com"], "url": "https://support.apple.com/tr-tr/102660" },
+  { "id": "google", "name": "Google", "domains": ["google.com", "google.com.tr", "gmail.com"], "hosts": ["accounts.google.com", "myaccount.google.com", "mail.google.com"], "url": "https://support.google.com/accounts/answer/185839?hl=tr" },
+  { "id": "microsoft", "name": "Microsoft / Outlook", "domains": ["microsoft.com", "live.com", "outlook.com", "office.com", "microsoftonline.com", "hotmail.com"], "hosts": ["login.live.com", "account.microsoft.com", "outlook.live.com"], "url": "https://support.microsoft.com/tr-tr/help/12408" },
+  { "id": "apple", "name": "Apple", "domains": ["apple.com", "icloud.com"], "hosts": ["appleid.apple.com", "account.apple.com"], "url": "https://support.apple.com/tr-tr/102660" },
   { "id": "instagram", "name": "Instagram", "domains": ["instagram.com"], "url": "https://help.instagram.com/566810106808145" },
   { "id": "facebook", "name": "Facebook", "domains": ["facebook.com"], "url": "https://www.facebook.com/help/148233965247823" },
   { "id": "whatsapp", "name": "WhatsApp Web", "domains": ["whatsapp.com"], "url": "https://faq.whatsapp.com/1920866721452534" },
