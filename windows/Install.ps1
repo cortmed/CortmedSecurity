@@ -90,6 +90,26 @@ try {
     foreach ($lnk in @($programs, $desktop)) { [Cortmed.AppIdentity]::SetShortcutAppId($lnk) }
 } catch { Write-Host "  (Kisayol kimligi ayarlanamadi: $($_.Exception.Message))" }
 
+# Davranis bekcisi: yetkili parca (CortmedGuard hizmeti + Sysmon), Windows bir kez yonetici izni ister
+$guardSetup = Join-Path $src 'Install-Guard.ps1'
+if (Test-Path $guardSetup) {
+    Write-Host '  Davranış bekçisi kuruluyor (Windows yönetici izni isteyecek)...'
+    try {
+        & $guardSetup -Source $src
+        if ($LASTEXITCODE -eq 2) { Write-Host '  [!] Davranış bekçisi kuruldu ama Sysmon kurulamadı' -ForegroundColor Yellow }
+        elseif ($LASTEXITCODE -ne 0) { throw "kurulum kodu $LASTEXITCODE" }
+        else { Write-Host '  [OK] Davranış bekçisi çalışıyor' -ForegroundColor Green }
+    } catch {
+        # UAC reddi (Win32 1223) ayrintisiz; diger hatalar kisa nedenle
+        $cancel = $false
+        for ($e = $_.Exception; $e; $e = $e.InnerException) {
+            if ($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 1223) { $cancel = $true }
+        }
+        Write-Host '  Davranış bekçisi kurulmadı; panelden sonra açabilirsiniz' -ForegroundColor Yellow
+        if (-not $cancel) { Write-Host "  ($($_.Exception.Message))" }
+    }
+}
+
 function Start-Cortmed([string]$mode) {
     if ((Test-Path $exe) -and $mode -eq 'Watch') { Start-Process $exe -ArgumentList '--watch' }
     elseif (Test-Path $exe) { Start-Process $exe }

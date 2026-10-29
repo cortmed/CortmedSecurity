@@ -22,9 +22,16 @@ if (-not (Test-Path $yarc)) { throw 'engine\dist\windows.yarc yok: once "python 
 
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage, (Join-Path $stage 'engines\yara'), (Join-Path $root 'dist') | Out-Null
-foreach ($f in 'CortmedSecurity.ps1', 'CortmedEngine.cs', 'Harden.ps1', 'Install.ps1', 'Uninstall.ps1', 'Kur.bat', 'Kaldir.bat', 'cortmed.ico', 'cortmed-logo.png', 'Launcher.cs') {
+foreach ($f in 'CortmedSecurity.ps1', 'CortmedEngine.cs', 'Harden.ps1', 'Install.ps1', 'Uninstall.ps1', 'Install-Guard.ps1', 'Uninstall-Guard.ps1', 'Kur.bat', 'Kaldir.bat', 'cortmed.ico', 'cortmed-logo.png', 'Launcher.cs') {
     Copy-Item (Join-Path $root "windows\$f") $stage
 }
+# Davranis bekcisi kaynaklari (Install-Guard.ps1 Program Files'ta derler), Sysmon ayari ve kurallar
+foreach ($d in 'guard\Core', 'guard\Service') {
+    New-Item -ItemType Directory -Force (Join-Path $stage $d) | Out-Null
+    Copy-Item (Join-Path $root "windows\$d\*.cs") (Join-Path $stage $d)
+}
+Copy-Item (Join-Path $root 'windows\guard\sysmon-cortmed.xml') (Join-Path $stage 'guard')
+Copy-Item (Join-Path $root 'engine\rules\behavior_rules.json') $stage
 Copy-Item (Join-Path $root 'engine\dist\windows.cmdb') $stage
 Copy-Item $yarc $stage
 Copy-Item (Join-Path $yaraCache 'yara64.exe') (Join-Path $stage 'engines\yara')

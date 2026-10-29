@@ -124,5 +124,68 @@ if (-not $cryptoOk) {
     }
 }
 
+# --- Yetkili kurulum ve kaldirma betikleri (yalnizca -WhatIf; yonetici, UAC ve yazma yok) ---
+$ig = Join-Path $root 'windows\Install-Guard.ps1'
+$ug = Join-Path $root 'windows\Uninstall-Guard.ps1'
+foreach ($s in $ig, $ug) {
+    $leaf = Split-Path $s -Leaf
+    $ok = Test-Path $s
+    $why = 'dosya yok'
+    if ($ok) {
+        $tok = $null; $errs = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($s, [ref]$tok, [ref]$errs)
+        $ok = ($errs.Count -eq 0)
+        $why = ($errs | ForEach-Object { $_.Message }) -join '; '
+    }
+    Check "betik ayristirma: $leaf" $ok $why
+    $bom = (Test-Path $s) -and ((@([IO.File]::ReadAllBytes($s) | Select-Object -First 3) -join ',') -eq '239,187,191')
+    Check "betik UTF-8 BOM: $leaf" $bom ''
+}
+
+$pfBase = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$guardDirs = @((Join-Path $pfBase 'Cortmed'), (Join-Path $env:ProgramData 'Cortmed'))
+function DirState { ($guardDirs | ForEach-Object { if (Test-Path $_) { "$_=" + @(Get-ChildItem $_ -Recurse -Force -ErrorAction SilentlyContinue).Count } else { "$_=yok" } }) -join '|' }
+$before = DirState
+function RunWhatIf([string]$state) {
+    if (-not (Test-Path $ig)) { return @('', -1) }
+    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ig -Source (Join-Path $root 'windows') -WhatIf -SysmonState $state | Out-String
+    return @($o, $LASTEXITCODE)
+}
+$rAbsent = RunWhatIf 'Absent'
+$rPresent = RunWhatIf 'Present'
+Check 'Install-Guard -WhatIf cikis kodu 0 (Sysmon yok)' ($rAbsent[1] -eq 0) "kod $($rAbsent[1])"
+Check 'Install-Guard -WhatIf cikis kodu 0 (Sysmon var)' ($rPresent[1] -eq 0) "kod $($rPresent[1])"
+Check 'Install-Guard -WhatIf: Sysmon kurulacak' ($rAbsent[0] -match 'Sysmon kurulacak') $rAbsent[0]
+Check 'Install-Guard -WhatIf: Sysmon onceden kurulu' ($rPresent[0] -match ('Sysmon ' + [char]0xF6 + 'nceden kurulu, dokunulmayacak')) $rPresent[0]
+Check 'Install-Guard -WhatIf: Sysmon yokken onceden kurulu demez' ($rAbsent[0] -notmatch 'dokunulmayacak') ''
+Check 'Install-Guard -WhatIf: hizmet adimi listelenir' ($rAbsent[0] -match 'CortmedGuard') ''
+$after = DirState
+Check 'Install-Guard -WhatIf hicbir sey olusturmaz' ($before -eq $after) "once: $before / sonra: $after"
+
+# Install-Guard'in kullandigi derleme komutu depo kaynaklariyla derlenir (gecici klasore)
+$csc64 = Join-Path $env:windir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+$gcsc = if (Test-Path $csc64) { $csc64 } else { Join-Path $env:windir 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+$gtmp = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-guardbuild-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force $gtmp | Out-Null
+try {
+    $gexe = Join-Path $gtmp 'CortmedGuard.exe'
+    $gsrc = @(Get-ChildItem (Join-Path $root 'windows\guard\Core'), (Join-Path $root 'windows\guard\Service') -Filter *.cs | ForEach-Object FullName) + (Join-Path $root 'windows\CortmedEngine.cs')
+    $gargs = @('/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/codepage:65001', "/out:$gexe") +
+        ($refs | ForEach-Object { "/reference:$_" }) + $gsrc
+    $gout = & $gcsc @gargs | Out-String
+    Check 'CortmedGuard.exe kurulum komutuyla derlenir' (($LASTEXITCODE -eq 0) -and (Test-Path $gexe)) $gout
+} finally { Remove-Item $gtmp -Recurse -Force -ErrorAction SilentlyContinue }
+
+# Kullanici betikleri yetkili parcaya baglanir
+$inst = Get-Content (Join-Path $root 'windows\Install.ps1') -Raw -Encoding UTF8
+$unin = Get-Content (Join-Path $root 'windows\Uninstall.ps1') -Raw -Encoding UTF8
+$pkg = Get-Content (Join-Path $root 'make-windows-package.ps1') -Raw -Encoding UTF8
+Check 'Install.ps1 Install-Guard.ps1 cagirir' ($inst -match 'Install-Guard\.ps1') ''
+Check 'Install.ps1 UAC reddi mesaji' ($inst.Contains('Davran' + [char]0x131 + [char]0x15F + ' bek' + [char]0xE7 + 'isi kurulmad' + [char]0x131 + '; panelden sonra a' + [char]0xE7 + 'abilirsiniz')) ''
+Check 'Uninstall.ps1 Program Files kopyasini yukseltir' ($unin -match 'Uninstall-Guard\.ps1' -and $unin -match 'RunAs') ''
+foreach ($w in 'Install-Guard.ps1', 'Uninstall-Guard.ps1', 'behavior_rules.json', 'sysmon-cortmed.xml', 'guard\Core', 'guard\Service') {
+    Check "paket icerir: $w" ($pkg.Contains($w)) ''
+}
+
 if ($fails -gt 0) { Write-Host "FAIL: $fails ek kontrol basarisiz"; exit 1 }
 exit $exeCode

@@ -12,6 +12,20 @@ foreach ($p in $procs | Where-Object { $_ }) {
     Wait-Process -Id $p.Id -Timeout 15 -ErrorAction SilentlyContinue
 }
 
+# Davranis bekcisi: yalnizca Program Files'taki (kullanicinin yazamadigi) kopya yonetici olarak calistirilir
+$pfBase = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$guardUninstall = Join-Path $pfBase 'Cortmed\Uninstall-Guard.ps1'
+if (Test-Path $guardUninstall) {
+    try {
+        $gp = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ErrorAction Stop `
+            -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $guardUninstall)
+        if ($gp.ExitCode -ne 0) { Write-Host "Davranış bekçisi tam kaldırılamadı (kod $($gp.ExitCode))." -ForegroundColor Yellow }
+    } catch {
+        Write-Host 'Not: Yönetici izni verilmediği için davranış bekçisi (CortmedGuard hizmeti) kaldırılmadı.' -ForegroundColor Yellow
+        Write-Host "Daha sonra yönetici olarak şunu çalıştırabilirsiniz: powershell -ExecutionPolicy Bypass -File ""$guardUninstall"""
+    }
+}
+
 foreach ($lnk in @(
         (Join-Path ([Environment]::GetFolderPath('Startup')) 'Cortmed Security Bekci.lnk'),
         (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Cortmed Security.lnk'),
