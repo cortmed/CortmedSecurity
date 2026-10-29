@@ -129,6 +129,20 @@ namespace Cortmed.Guard
             catch { }
         }
 
+        // Soru geri cekildi (donuk agac kendiliginden bitti). true: satir istemciye yazildi.
+        public bool SendWithdraw(string id)
+        {
+            if (string.IsNullOrEmpty(id) || id.Length > 256) return false;
+            try
+            {
+                var d = new Dictionary<string, object>();
+                d["type"] = "withdraw";
+                d["id"] = id;
+                return Write(new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(d) + "\n"));
+            }
+            catch { return false; }
+        }
+
         bool Write(byte[] data)
         {
             lock (_lock)
@@ -248,7 +262,14 @@ namespace Cortmed.Guard
                 if (!obj.TryGetValue("decision", out decision) || !(decision is string)) return;
                 string dec = (string)decision;
                 if (dec != "kill" && dec != "allow") return;
-                _onAnswer((string)id, dec); // donus degeri: kabul edildi mi (cevap mesaji yok)
+                bool ok = false;
+                try { ok = _onAnswer((string)id, dec); } catch { ok = false; }
+                // Cevabin sonucu tepsiye: ok=false ise soru artik yok (agac bitti ya da zaten cevaplandi)
+                var r = new Dictionary<string, object>();
+                r["type"] = "result";
+                r["id"] = (string)id;
+                r["ok"] = ok;
+                Write(new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(r) + "\n"));
             }
             catch { }
         }

@@ -590,6 +590,36 @@ public static class GuardTests
     }
 
     [Test]
+    static void AnswerGetsResultAndWithdrawReachesClient()
+    {
+        string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        using (var server = new GuardPipe(name, (id, d) => id == "known"))
+        {
+            server.Start();
+            Assert(!server.SendWithdraw("none"), "istemci yokken SendWithdraw false");
+            using (var client = new GuardClient(name))
+            {
+                Assert(WaitFor(() => client.Connected && server.HasClient, 12000), "baglanmali");
+                Assert(client.Answer("known", "kill"), "bagliyken Answer true (yazildi)");
+                string json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "result satiri gelmeli");
+                Assert(json.Contains("\"result\"") && json.Contains("\"known\"") && json.Contains("\"ok\":true"), "result ok=true: " + json);
+                Assert(client.Answer("nope", "allow"), "bilinmeyen id de yazilir");
+                json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "ikinci result gelmeli");
+                Assert(json.Contains("\"result\"") && json.Contains("\"nope\"") && json.Contains("\"ok\":false"), "result ok=false: " + json);
+                Assert(server.SendWithdraw("w1"), "bagliyken SendWithdraw true");
+                json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "withdraw istemciye ulasmali");
+                Assert(json.Contains("\"withdraw\"") && json.Contains("\"w1\""), "withdraw satiri: " + json);
+            }
+        }
+        var lone = new GuardClient("CortmedGuardTest-" + Guid.NewGuid().ToString("N"));
+        Assert(!lone.Answer("x", "kill"), "bagli degilken Answer false");
+        lone.Dispose();
+    }
+
+    [Test]
     static void RejectsUnknownIdOversizedAndMalformed()
     {
         string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
@@ -728,6 +758,15 @@ public static class GuardTests
             if (!Client) return false;
             Sent.Add(p);
             return true;
+        }
+        public List<string> Withdrawn = new List<string>();
+        public object EngineLock;          // verilirse Withdraw'in _lock altinda cagrilip cagrilmadigi kaydedilir
+        public bool WithdrawUnderLock;
+        public bool Withdraw(string id)
+        {
+            if (EngineLock != null && System.Threading.Monitor.IsEntered(EngineLock)) WithdrawUnderLock = true;
+            Withdrawn.Add(id);
+            return Client;
         }
     }
 
@@ -932,6 +971,38 @@ public static class GuardTests
         g.OnEvent(new GuardEvent { EventId = 5, Pid = 5000, Time = new DateTime(2026, 10, 29, 10, 0, 31, DateTimeKind.Utc) });
         Assert(!g.OnAnswer(s.Sent[0].Id, "kill"), "agac bitince soru dusmeli");
         Assert(c.Killed.Count == 0);
+    }
+
+    [Test] static void TreeExitWithdrawsPromptOnceOutsideLock()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        s.EngineLock = typeof(GuardEngine).GetField("_lock", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(g);
+        RunReplay(g);
+        string id = s.Sent[0].Id;
+        Assert(s.Withdrawn.Count == 0, "agac yasarken geri cekme yok");
+        g.OnEvent(new GuardEvent { EventId = 5, Pid = 5001, Time = new DateTime(2026, 10, 29, 10, 0, 30, DateTimeKind.Utc) });
+        Assert(s.Withdrawn.Count == 0, "cocuk bitince agac hala var");
+        g.OnEvent(new GuardEvent { EventId = 5, Pid = 5000, Time = new DateTime(2026, 10, 29, 10, 0, 31, DateTimeKind.Utc) });
+        Assert(s.Withdrawn.Count == 1 && s.Withdrawn[0] == id, "tam bir geri cekme: " + string.Join(",", s.Withdrawn.ToArray()));
+        Assert(!s.WithdrawUnderLock, "Withdraw _lock altinda cagrilmamali");
+        g.OnEvent(new GuardEvent { EventId = 5, Pid = 5000, Time = new DateTime(2026, 10, 29, 10, 0, 32, DateTimeKind.Utc) });
+        Assert(s.Withdrawn.Count == 1, "ikinci kez geri cekilmez");
+    }
+
+    [Test] static void FindingHasUtcTime()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        var list = (object[])new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(ReadData(dir, "findings.json"));
+        var f = (Dictionary<string, object>)list[0];
+        object t;
+        DateTime parsed;
+        Assert(f.TryGetValue("time", out t) && DateTime.TryParse((string)t, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind, out parsed) && parsed.Kind == DateTimeKind.Utc, "time UTC ISO 8601: " + t);
     }
 
     [Test] static void NothingFrozenRecordsWarnInsteadOfPrompt()

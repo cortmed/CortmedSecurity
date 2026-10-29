@@ -59,6 +59,7 @@ namespace Cortmed.Guard
 
         public bool HasClient { get { return _pipe.HasClient; } }
         public bool Send(Prompt p) { return _pipe.SendPrompt(p); }
+        public bool Withdraw(string id) { return _pipe.SendWithdraw(id); }
     }
 
     // Davranis kurallarinin imzali yuklenmesi ve gunluk guncellemesi.
@@ -312,6 +313,7 @@ namespace Cortmed.Guard
     {
         public bool HasClient { get { return false; } }
         public bool Send(Prompt p) { return false; }
+        public bool Withdraw(string id) { return false; }
     }
 
     // CortmedGuard Windows hizmeti (SYSTEM).

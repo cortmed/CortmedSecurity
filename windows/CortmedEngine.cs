@@ -306,26 +306,29 @@ namespace Cortmed
             return false;
         }
 
-        public void Answer(string id, string decision)
+        // true: satir boruya yazildi (hizmetin sonucu ayrica "result" satiriyla gelir)
+        public bool Answer(string id, string decision)
         {
             try
             {
-                if (id == null || decision == null) return;
+                if (id == null || decision == null) return false;
                 byte[] data = new UTF8Encoding(false).GetBytes(
                     "{\"type\":\"answer\",\"id\":" + Quote(id) + ",\"decision\":" + Quote(decision) + "}\n");
                 lock (_lock)
                 {
                     NamedPipeClientStream p = _pipe;
-                    if (!_connected || p == null) return;
+                    if (!_connected || p == null) return false;
                     Task t = p.WriteAsync(data, 0, data.Length);
                     if (!t.Wait(2000))
                     {
                         _connected = false;
                         try { p.Dispose(); } catch { }
+                        return false;
                     }
+                    return true;
                 }
             }
-            catch { }
+            catch { return false; }
         }
 
         static string Quote(string s)
@@ -436,7 +439,9 @@ namespace Cortmed
                 if (top == null) return;
                 string type;
                 if (!top.TryGetValue("type", out type)) return;
-                if (type == "ask")
+                // ask, withdraw (soru geri cekildi) ve result (cevap sonucu) ayni kuyruga ham JSON olarak girer;
+                // tepsi "type" alanina gore ayirir
+                if (type == "ask" || type == "withdraw" || type == "result")
                 {
                     lock (_lock)
                     {

@@ -27,6 +27,8 @@ namespace Cortmed.Guard
     {
         bool HasClient { get; }
         bool Send(Prompt p);
+        // Donuk agac kendiliginden bitti: tepsideki soru geri cekilir. true: istemciye ulasti.
+        bool Withdraw(string id);
     }
 
     // guard.log: zaman damgali UTF-8 satirlar, 1 MB'ta guard.log.1'e doner. Hicbir zaman istisna firlatmaz.
@@ -278,10 +280,11 @@ namespace Cortmed.Guard
         {
             if (e == null) return;
             var decisions = new List<KeyValuePair<Decision, string>>();
+            var withdrawn = new List<string>();
             bool flush = false;
             lock (_lock)
             {
-                try { flush = Process(e, decisions); }
+                try { flush = Process(e, decisions, withdrawn); }
                 catch (Exception ex) { _log.Write("Olay işlenemedi (olay " + e.EventId + ", pid " + e.Pid + "): " + ex.Message); }
             }
             var cb = DecisionMade;
@@ -290,10 +293,23 @@ namespace Cortmed.Guard
                 {
                     try { cb(kv.Key, kv.Value); } catch { }
                 }
+            if (withdrawn.Count > 0) SendWithdrawn(withdrawn);
             if (flush) FlushPending();
         }
 
-        bool Process(GuardEvent e, List<KeyValuePair<Decision, string>> decisions)
+        // _lock DISINDA cagrilir (kilit sirasi: _sendLock -> _lock; sink asla _lock altinda cagrilmaz)
+        void SendWithdrawn(List<string> ids)
+        {
+            lock (_sendLock)
+            {
+                foreach (string id in ids)
+                {
+                    try { _sink.Withdraw(id); } catch { }
+                }
+            }
+        }
+
+        bool Process(GuardEvent e, List<KeyValuePair<Decision, string>> decisions, List<string> withdrawn)
         {
             bool flush = false;
             DateTime now = e.Time == default(DateTime) ? DateTime.UtcNow : e.Time;
@@ -324,6 +340,7 @@ namespace Cortmed.Guard
                     if (_byRoot.TryGetValue(gone, out p))
                     {
                         _pending.Remove(p.Prompt.Id);
+                        withdrawn.Add(p.Prompt.Id);
                         SavePending();
                         _log.Write("Donuk ağaç kendiliğinden sona erdi, soru kaldırıldı: " + p.Prompt.Path + " (kök " + gone + ")");
                     }
@@ -628,6 +645,7 @@ namespace Cortmed.Guard
                 f["path"] = image;
                 f["tab"] = "threat";
                 f["report"] = report.ToString();
+                f["time"] = DateTime.UtcNow.ToString("o");
                 FindingStore.Upsert(DataFile("findings.json"), f);
             }
             catch (Exception ex)
