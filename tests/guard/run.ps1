@@ -45,12 +45,42 @@ if ($xml -ne $null) {
     foreach ($n in 'ProcessCreate','ProcessTerminate','CreateRemoteThread','ProcessAccess','FileCreate','RegistryEvent') {
         Check "sysmon kural: $n" ($ids -match $n) ''
     }
-    # Hepsi-kaydet olaylari bos exclude, digerleri include (listelenmeyen her sey kapali)
+    # Hepsi-kaydet olaylari bos exclude (yorum dugumleri sayilmaz), digerleri include;
+    # tek istisna: FileCreate icin cocuklu bir exclude grubu (gurultu azaltma)
     $logAll = 'ProcessCreate','ProcessTerminate','CreateRemoteThread'
     $bad = @($xml.SelectNodes('//RuleGroup/*') | Where-Object {
-        if ($logAll -contains $_.LocalName) { $_.GetAttribute('onmatch') -ne 'exclude' -or $_.HasChildNodes }
+        $kids = @($_.ChildNodes | Where-Object { $_.NodeType -eq 'Element' }).Count
+        if ($logAll -contains $_.LocalName) { $_.GetAttribute('onmatch') -ne 'exclude' -or $kids -gt 0 }
+        elseif ($_.LocalName -eq 'FileCreate' -and $_.GetAttribute('onmatch') -eq 'exclude') { $kids -eq 0 }
         else { $_.GetAttribute('onmatch') -ne 'include' } })
     Check 'sysmon kural bicimi (hepsi=bos exclude, digerleri include)' ($bad.Count -eq 0) ''
+
+    function HasCond([string]$el, [string]$field, [string]$val, [string]$mode) {
+        $q = "//RuleGroup/$el[@onmatch='$mode']/$field"
+        return (@($xml.SelectNodes($q) | Where-Object { $_.InnerText -eq $val }).Count -gt 0)
+    }
+    $want = @(
+        @('ProcessAccess','TargetImage','\lsass.exe','include'),
+        @('FileCreate','TargetFilename','\Start Menu\Programs\Startup\','include'),
+        @('FileCreate','TargetFilename','discord_desktop_core','include'),
+        @('FileCreate','TargetFilename','\Extensions\','include'),
+        @('FileCreate','TargetFilename','\Documents\','include'),
+        @('FileCreate','TargetFilename','\Desktop\','include'),
+        @('FileCreate','TargetFilename','\Pictures\','include'),
+        @('FileCreate','TargetFilename','\Resimler\','include'),
+        @('FileCreate','TargetFilename','\Videolar\','include'),
+        @('FileCreate','TargetFilename',('\M' + [char]0xFC + 'zik\'),'include'),
+        @('FileCreate','TargetFilename','\.vscode\','exclude'),
+        @('FileCreate','TargetFilename','\node_modules\','exclude'),
+        @('FileCreate','TargetFilename','\.git\','exclude'),
+        @('RegistryEvent','TargetObject','\CurrentVersion\Run','include'),
+        @('RegistryEvent','TargetObject','\Windows Defender\Exclusions\','include'),
+        @('RegistryEvent','TargetObject','DisableRealtimeMonitoring','include'))
+    foreach ($w in $want) {
+        Check "sysmon $($w[0]) $($w[3]) $($w[2])" (HasCond $w[0] $w[1] $w[2] $w[3]) ''
+    }
+    Check 'sysmon HashAlgorithms SHA256' ($xml.DocumentElement.SelectSingleNode('HashAlgorithms').InnerText -eq 'SHA256') ''
+    Check 'sysmon genis Windows Defender kurali yok' (-not (HasCond 'RegistryEvent' 'TargetObject' '\Windows Defender\' 'include')) ''
 }
 
 $py = Get-Command python -ErrorAction SilentlyContinue

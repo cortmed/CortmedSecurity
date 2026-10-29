@@ -38,6 +38,18 @@
         <TargetFilename condition="contains">\Music\</TargetFilename>
         <TargetFilename condition="contains">\Belgeler\</TargetFilename>
         <TargetFilename condition="contains">\Masaüstü\</TargetFilename>
+        <TargetFilename condition="contains">\Resimler\</TargetFilename>
+        <TargetFilename condition="contains">\Videolar\</TargetFilename>
+        <TargetFilename condition="contains">\Müzik\</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+
+    <!-- Olay 11 gurultu azaltma: \Extensions\ icinde gelistirici klasorleri (exclude, include'dan once degerlendirilir) -->
+    <RuleGroup name="FileCreateExclude" groupRelation="or">
+      <FileCreate onmatch="exclude">
+        <TargetFilename condition="contains">\.vscode\</TargetFilename>
+        <TargetFilename condition="contains">\node_modules\</TargetFilename>
+        <TargetFilename condition="contains">\.git\</TargetFilename>
       </FileCreate>
     </RuleGroup>
 
@@ -45,8 +57,10 @@
     <RuleGroup name="RegistryEvent" groupRelation="or">
       <RegistryEvent onmatch="include">
         <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
-        <TargetObject condition="contains">\CurrentVersion\RunOnce</TargetObject>
-        <TargetObject condition="contains">\Windows Defender\</TargetObject>
+        <TargetObject condition="contains">\Windows Defender\Exclusions\</TargetObject>
+        <TargetObject condition="contains">DisableRealtimeMonitoring</TargetObject>
+        <TargetObject condition="contains">DisableAntiSpyware</TargetObject>
+        <TargetObject condition="contains">\Windows Defender\Real-Time Protection\</TargetObject>
       </RegistryEvent>
     </RuleGroup>
   </EventFiltering>
