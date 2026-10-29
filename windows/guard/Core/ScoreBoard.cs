@@ -13,7 +13,15 @@ namespace Cortmed.Guard
         public List<string> Reasons = new List<string>();
     }
 
-    // Kok surec basina puan tutar. Ayni davranis pencerede bir kez sayilir.
+    /// <summary>
+    /// Kok surec basina puan tutar. Ayni davranis pencerede bir kez sayilir.
+    /// Thread-safe: tum genel metotlar tek bir kilit altinda calisir.
+    /// CAGIRAN, Forget(root) METODUNU MUTLAKA CAGIRMALIDIR:
+    /// (a) ProcessTree.OnProcessExit bir kok pid dondurdugunde, ve
+    /// (b) yeni bir surec basladiginda ve kendi koku oldugunda (RootOf(pid) == pid);
+    ///     boylece yeniden kullanilan bir kok pid eski Frozen bayragini/puanini devralmaz.
+    /// Frozen olmayan ve son etkinligi WindowSeconds'tan eski durumlar otomatik atilir.
+    /// </summary>
     public class ScoreBoard
     {
         class Entry
@@ -28,6 +36,7 @@ namespace Cortmed.Guard
             public bool BaseCounted;
             public int BaseScore;
             public bool Frozen;
+            public DateTime LastActivity;
             public List<Entry> Hits = new List<Entry>();
             public Queue<DateTime> DocWrites = new Queue<DateTime>();
         }
@@ -45,7 +54,9 @@ namespace Cortmed.Guard
         {
             lock (_lock)
             {
+                EvictIdle(now);
                 State s = GetState(rootPid, baseScore);
+                s.LastActivity = now;
                 Expire(s, now);
                 if (hit != null) AddHit(s, hit.Behavior, hit.Reason, now);
                 return Decide(rootPid, s);
@@ -56,7 +67,9 @@ namespace Cortmed.Guard
         {
             lock (_lock)
             {
+                EvictIdle(now);
                 State s = GetState(rootPid, baseScore);
+                s.LastActivity = now;
                 Expire(s, now);
                 s.DocWrites.Enqueue(now);
                 while (s.DocWrites.Count > 0 && (now - s.DocWrites.Peek()).TotalSeconds > _rules.MassFileSeconds)
@@ -74,6 +87,18 @@ namespace Cortmed.Guard
         public void Forget(int rootPid)
         {
             lock (_lock) { _states.Remove(rootPid); }
+        }
+
+        void EvictIdle(DateTime now)
+        {
+            List<int> dead = null;
+            foreach (var kv in _states)
+                if (!kv.Value.Frozen && (now - kv.Value.LastActivity).TotalSeconds > _rules.WindowSeconds)
+                {
+                    if (dead == null) dead = new List<int>();
+                    dead.Add(kv.Key);
+                }
+            if (dead != null) foreach (int k in dead) _states.Remove(k);
         }
 
         State GetState(int rootPid, int baseScore)

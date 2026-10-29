@@ -9,6 +9,8 @@ namespace Cortmed.Guard
     // surec kendi kokudur; diger sureclerin koku ebeveyninin kokudur.
     // Tasarim: kok, surec BASLARKEN hesaplanip kaydedilir. Cikan bir surec, hayattaki
     // torunu kaldigi surece kayitta tutulur (RootOf/ImageOf bozulmasin); torunu kalmayinca silinir.
+    // Cikis olayi kacirilan surecler pid yeniden kullanilana kadar kayitta kalir (pid uzayi ile sinirli).
+    // Thread-safe: tum genel metotlar tek bir kilit (_lock) altinda calisir.
     public class ProcessTree
     {
         class Node
@@ -74,14 +76,19 @@ namespace Cortmed.Guard
             }
         }
 
-        public void OnProcessExit(int pid)
+        // Donus: bu cikistan sonra kokun alt agacinda hayatta kimse kalmadiysa kok pid'i, aksi halde 0.
+        public int OnProcessExit(int pid)
         {
             lock (_lock)
             {
                 Node n;
-                if (!_nodes.TryGetValue(pid, out n)) return;
+                if (!_nodes.TryGetValue(pid, out n)) return 0;
+                int root = n.Root;
                 n.Alive = false;
                 Prune(n);
+                foreach (var x in _nodes.Values)
+                    if (x.Alive && x.Root == root) return 0;
+                return root;
             }
         }
 

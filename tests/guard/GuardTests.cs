@@ -338,6 +338,36 @@ public static class GuardTests
         Assert(sb.Add(5, 0, Hit(Behavior.DisableProtection), t).Level == DecisionLevel.Freeze, "after forget");
     }
 
+    [Test] static void RootEndsOnlyWhenWholeSubtreeExited()
+    {
+        var t = new ProcessTree();
+        t.OnProcessStart(Start(10, 1, @"C:\Windows\explorer.exe"));
+        t.OnProcessStart(Start(20, 10, @"C:\x\a.exe"));
+        t.OnProcessStart(Start(30, 20, @"C:\x\b.exe"));
+        Assert(t.OnProcessExit(20) == 0, "root exits first");
+        Assert(t.OnProcessExit(30) == 20, "last child ends root");
+        Assert(t.OnProcessExit(999) == 0, "unknown");
+    }
+
+    [Test] static void ForgetResetsFrozenSoReusedPidCanFreezeAgain()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        sb.Add(5, 0, Hit(Behavior.LsassAccess), t);
+        Assert(sb.Add(5, 0, Hit(Behavior.DisableProtection), t).Level == DecisionLevel.Freeze);
+        sb.Forget(5);
+        sb.Add(5, 0, Hit(Behavior.LsassAccess), t.AddSeconds(1000));
+        Assert(sb.Add(5, 0, Hit(Behavior.DisableProtection), t.AddSeconds(1000)).Level == DecisionLevel.Freeze);
+    }
+
+    [Test] static void IdleStatesAreEvicted()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        sb.Add(1, 30, Hit(Behavior.Persistence), t);
+        Assert(sb.Add(1, 0, null, t.AddSeconds(301)).Score == 0, "evicted, base not remembered");
+        sb.Add(2, 30, null, t);
+        Assert(sb.Add(2, 0, null, t.AddSeconds(10)).Score == 30, "active kept");
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
