@@ -253,9 +253,9 @@ function Get-ClamStatusText {
     if ((Get-Config).clamav -ne $true) { return 'Kapalı (Ayarlar''dan açılabilir)' }
     if (Test-ClamReady) { return $null }
     $s = if (Test-Path $ClamStatusPath) { (Get-Content $ClamStatusPath -Raw).Trim() } else { '' }
-    if ($s -like 'hata*') { return "Kurulamadı ($s). Kaydet'e basınca tekrar denenir" }
+    if ($s -like 'hata*') { return "Kurulamadı ($s). Düğmeyi kapatıp yeniden açınca tekrar denenir" }
     if (Test-ClamInstalling) { return 'Kuruluyor, birkaç dakika içinde hazır olur' }
-    return 'Kurulum yarıda kaldı. Kaydet''e basınca tekrar denenir'
+    return 'Kurulum yarıda kaldı. Düğmeyi kapatıp yeniden açınca tekrar denenir'
 }
 
 # Kurulum surecinin hala calistigi varsayilan sure: durum dosyasi "kuruluyor" ve 90 dakikadan yeni
