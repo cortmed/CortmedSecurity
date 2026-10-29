@@ -1199,14 +1199,15 @@ function Start-Watcher {
     $tray.Icon = $iconOk
     $tray.Text = 'Cortmed Security'
     $menu = New-Object Windows.Forms.ContextMenuStrip
-    $menu.ShowImageMargin = $false
-    $menu.BackColor = $UiSurface; $menu.ForeColor = $UiText
+    $menu.ShowImageMargin = $true
     $menu.Font = New-Object Drawing.Font('Segoe UI', 10)
     $miOpen = New-Object Windows.Forms.ToolStripMenuItem 'Cortmed Security''yi aç'
     $miOpen.Font = New-Object Drawing.Font('Segoe UI Semibold', 10)
     $miScan = New-Object Windows.Forms.ToolStripMenuItem 'Şimdi tara'
     $miStop = New-Object Windows.Forms.ToolStripMenuItem 'Korumayı durdur'
     [void]$menu.Items.AddRange(@($miOpen, $miScan, (New-Object Windows.Forms.ToolStripSeparator), $miStop))
+    $miOpen.Image = New-MenuGlyph 'open'; $miScan.Image = New-MenuGlyph 'scan'; $miStop.Image = New-MenuGlyph 'stop'
+    Set-DarkMenuStyle $menu
     $tray.ContextMenuStrip = $menu
 
     $state = @{ lastDaily = [datetime]::MinValue; busy = $false; ticks = 0 }
@@ -1340,6 +1341,171 @@ $UiLevel = @{
     NONE   = [Drawing.Color]::FromArgb(147, 164, 189)
 }
 
+# Pencere cercevesi (Windows 10/11): koyu baslik cubugu ve yuvarlak koseler. Hata olursa sessizce atlanir (C# 5).
+try {
+    if (-not ('CortmedUi.Dwm' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CortmedUi {
+    public static class Dwm {
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+        public static void Apply(IntPtr hwnd) {
+            try {
+                int on = 1;
+                if (DwmSetWindowAttribute(hwnd, 20, ref on, 4) != 0) { DwmSetWindowAttribute(hwnd, 19, ref on, 4); }
+                int round = 2;
+                DwmSetWindowAttribute(hwnd, 33, ref round, 4);
+            } catch (Exception) { }
+        }
+    }
+}
+'@
+    }
+} catch { }
+
+# Koyu sag tik menusu renkleri (tema renklerinden kurulur)
+try {
+    if (-not ('CortmedUi.DarkColors' -as [type])) {
+        Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System.Drawing;
+using System.Windows.Forms;
+namespace CortmedUi {
+    public class DarkColors : ProfessionalColorTable {
+        private Color bg;
+        private Color hover;
+        private Color border;
+        public DarkColors(Color bg, Color hover, Color border) {
+            this.bg = bg; this.hover = hover; this.border = border;
+            this.UseSystemColors = false;
+        }
+        public override Color ToolStripDropDownBackground { get { return bg; } }
+        public override Color ImageMarginGradientBegin { get { return bg; } }
+        public override Color ImageMarginGradientMiddle { get { return bg; } }
+        public override Color ImageMarginGradientEnd { get { return bg; } }
+        public override Color MenuItemSelected { get { return hover; } }
+        public override Color MenuItemSelectedGradientBegin { get { return hover; } }
+        public override Color MenuItemSelectedGradientEnd { get { return hover; } }
+        public override Color MenuItemPressedGradientBegin { get { return hover; } }
+        public override Color MenuItemPressedGradientMiddle { get { return hover; } }
+        public override Color MenuItemPressedGradientEnd { get { return hover; } }
+        public override Color MenuItemBorder { get { return hover; } }
+        public override Color MenuBorder { get { return border; } }
+        public override Color SeparatorDark { get { return border; } }
+        public override Color SeparatorLight { get { return bg; } }
+    }
+}
+'@
+    }
+} catch { }
+
+function Set-WindowChrome($form) {
+    $form.Add_HandleCreated({ param($s, $e) try { [CortmedUi.Dwm]::Apply($s.Handle) } catch { } })
+}
+
+# Kalkan 100x120 birimlik bir yolda cizilir; Draw-Shield istenen boyuta olceklendirir
+function New-ShieldPath {
+    $p = New-Object Drawing.Drawing2D.GraphicsPath
+    $p.AddBezier(0, 16, 20, 16, 36, 10, 50, 0)
+    $p.AddBezier(50, 0, 64, 10, 80, 16, 100, 16)
+    $p.AddLine(100, 16, 100, 62)
+    $p.AddBezier(100, 62, 100, 90, 78, 108, 50, 120)
+    $p.AddBezier(50, 120, 22, 108, 0, 90, 0, 62)
+    $p.CloseFigure()
+    return $p
+}
+
+# $symbol: check | alert | cross | dots
+function Draw-Shield($g, [single]$x, [single]$y, [single]$h, [Drawing.Color]$c, [string]$symbol) {
+    $g.SmoothingMode = 'AntiAlias'
+    $s = $h / 120
+    $g.TranslateTransform($x, $y); $g.ScaleTransform($s, $s)
+    $path = New-ShieldPath
+    $light = [Drawing.Color]::FromArgb(255, [math]::Min(255, $c.R + 32), [math]::Min(255, $c.G + 32), [math]::Min(255, $c.B + 32))
+    $rect = New-Object Drawing.RectangleF(0, 0, 100, 120)
+    $br = New-Object Drawing.Drawing2D.LinearGradientBrush($rect, $light, $c, [single]75)
+    $g.FillPath($br, $path)
+    $edge = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(90, 255, 255, 255)), 2.5
+    $g.DrawPath($edge, $path)
+    $pen = New-Object Drawing.Pen ([Drawing.Color]::White), 10
+    $pen.StartCap = 'Round'; $pen.EndCap = 'Round'; $pen.LineJoin = 'Round'
+    $white = New-Object Drawing.SolidBrush ([Drawing.Color]::White)
+    switch ($symbol) {
+        'check' { $g.DrawLines($pen, [Drawing.PointF[]]@((New-Object Drawing.PointF(29, 62)), (New-Object Drawing.PointF(45, 78)), (New-Object Drawing.PointF(72, 44)))) }
+        'alert' {
+            $g.DrawLine($pen, 50, 32, 50, 66)
+            $g.FillEllipse($white, 43, 78, 14, 14)
+        }
+        'cross' {
+            $g.DrawLine($pen, 33, 45, 67, 79)
+            $g.DrawLine($pen, 67, 45, 33, 79)
+        }
+        default {
+            foreach ($dx in 28, 50, 72) { $g.FillEllipse($white, ($dx - 6), 54, 12, 12) }
+        }
+    }
+    $g.ResetTransform()
+    $white.Dispose(); $pen.Dispose(); $edge.Dispose(); $br.Dispose(); $path.Dispose()
+}
+
+# Uyari ucgeni (soru penceresi) yuvarlak koseli, icinde unlem
+function New-WarnBitmap([int]$size) {
+    $bmp = New-Object Drawing.Bitmap $size, $size
+    $g = [Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = 'AntiAlias'
+    $k = $size / 100.0
+    $g.ScaleTransform($k, $k)
+    $path = New-Object Drawing.Drawing2D.GraphicsPath
+    $pts = [Drawing.PointF[]]@((New-Object Drawing.PointF(50, 8)), (New-Object Drawing.PointF(94, 86)), (New-Object Drawing.PointF(6, 86)))
+    $path.AddPolygon($pts)
+    $br = New-Object Drawing.Drawing2D.LinearGradientBrush((New-Object Drawing.RectangleF(0, 0, 100, 100)), [Drawing.Color]::FromArgb(255, 252, 191, 73), $UiLevel.YELLOW, [single]90)
+    $pen = New-Object Drawing.Pen $UiLevel.YELLOW, 12
+    $pen.LineJoin = 'Round'
+    $g.DrawPath($pen, $path)
+    $g.FillPath($br, $path)
+    $dark = [Drawing.Color]::FromArgb(60, 38, 4)
+    $pen2 = New-Object Drawing.Pen $dark, 9
+    $pen2.StartCap = 'Round'; $pen2.EndCap = 'Round'
+    $g.DrawLine($pen2, 50, 36, 50, 64)
+    $g.FillEllipse((New-Object Drawing.SolidBrush $dark), 44.5, 69, 11, 11)
+    $g.Dispose(); $path.Dispose(); $br.Dispose(); $pen.Dispose(); $pen2.Dispose()
+    return $bmp
+}
+
+# Sag tik menusu: koyu ve duzgun (tema renkleri). $kind: open | scan | stop
+function New-MenuGlyph([string]$kind) {
+    $bmp = New-Object Drawing.Bitmap 16, 16
+    $g = [Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = 'AntiAlias'
+    switch ($kind) {
+        'open' { Draw-Shield $g 2 0 16 $UiAccent 'check' }
+        'scan' {
+            $pen = New-Object Drawing.Pen $UiAccent, 2
+            $pen.EndCap = 'Round'
+            $g.DrawEllipse($pen, 2, 2, 8, 8); $g.DrawLine($pen, 9, 9, 13, 13)
+            $pen.Dispose()
+        }
+        'stop' {
+            $b = New-Object Drawing.SolidBrush $UiLevel.RED
+            $g.FillRectangle($b, 3, 3, 10, 10); $b.Dispose()
+        }
+    }
+    $g.Dispose()
+    return $bmp
+}
+
+function Set-DarkMenuStyle($menu) {
+    $menu.BackColor = $UiSurface; $menu.ForeColor = $UiText
+    try {
+        $ct = New-Object CortmedUi.DarkColors($UiSurface, $UiSurface2, [Drawing.Color]::FromArgb(48, 72, 108))
+        $r = New-Object Windows.Forms.ToolStripProfessionalRenderer($ct)
+        $r.RoundedEdges = $false
+        $menu.Renderer = $r
+    } catch { }
+    foreach ($it in $menu.Items) { $it.ForeColor = $UiText }
+}
+
 function Get-CortmedIcon {
     $p = Join-Path $Root 'cortmed.ico'
     if (Test-Path $p) { try { return New-Object Drawing.Icon (New-Object IO.MemoryStream (, [IO.File]::ReadAllBytes($p))) } catch { } }
@@ -1366,14 +1532,28 @@ function New-Label([string]$text, [int]$x, [int]$y, $color = $UiText, $font = $n
     return $l
 }
 
-function New-FlatButton([string]$text, [bool]$primary = $false) {
+function New-FlatButton([string]$text, [bool]$primary = $false, [string]$style = '') {
     $b = New-Object Windows.Forms.Button
     $b.Text = $text; $b.AutoSize = $true; $b.Height = 40
     $b.FlatStyle = 'Flat'; $b.Cursor = 'Hand'
     $b.Padding = New-Object Windows.Forms.Padding(12, 0, 12, 0)
     $b.Margin = New-Object Windows.Forms.Padding(0, 0, 10, 0)
     $b.Font = New-Font 10 'Bold'
-    if ($primary) {
+    if ($style -eq 'danger') {
+        # Kirmizi ana dugme (guvenli secenek: programi kapat)
+        $b.BackColor = [Drawing.Color]::FromArgb(220, 38, 38); $b.ForeColor = [Drawing.Color]::White
+        $b.FlatAppearance.BorderSize = 0
+        $b.FlatAppearance.MouseOverBackColor = [Drawing.Color]::FromArgb(239, 68, 68)
+    } elseif ($style -eq 'muted') {
+        $b.BackColor = [Drawing.Color]::FromArgb(52, 62, 80); $b.ForeColor = [Drawing.Color]::FromArgb(208, 215, 226)
+        $b.FlatAppearance.BorderSize = 0
+        $b.FlatAppearance.MouseOverBackColor = [Drawing.Color]::FromArgb(66, 78, 100)
+    } elseif ($style -eq 'link') {
+        $b.BackColor = $UiBg; $b.ForeColor = $UiAccent
+        $b.Font = New-Object Drawing.Font('Segoe UI Semibold', 10, [Drawing.FontStyle]::Underline)
+        $b.FlatAppearance.BorderSize = 0
+        $b.FlatAppearance.MouseOverBackColor = $UiSurface
+    } elseif ($primary) {
         $b.BackColor = $UiAccent; $b.ForeColor = [Drawing.Color]::FromArgb(6, 20, 40)
         $b.FlatAppearance.BorderSize = 0
         $b.FlatAppearance.MouseOverBackColor = [Drawing.Color]::FromArgb(79, 195, 247)
@@ -1393,6 +1573,7 @@ function New-DarkForm([string]$title, [int]$w, [int]$h) {
     $f.Font = New-Font 10
     $f.BackColor = $UiBg; $f.ForeColor = $UiText
     $icon = Get-CortmedIcon; if ($icon) { $f.Icon = $icon }
+    Set-WindowChrome $f
     return $f
 }
 
@@ -1412,52 +1593,209 @@ function New-BrandBar {
     return $bar
 }
 
-# Bulgu listesi (tehditler ve "listeyi goster" pencereleri icin ortak)
-function New-FindingListView($owner) {
-    $list = New-Object Windows.Forms.ListView
-    $list.View = 'Details'; $list.FullRowSelect = $true; $list.Dock = 'Fill'; $list.ShowItemToolTips = $true
-    $list.BackColor = $UiSurface; $list.ForeColor = $UiText; $list.BorderStyle = 'None'
-    $list.HeaderStyle = 'Nonclickable'; $list.OwnerDraw = $true
-    $list.Font = New-Font 10
-    $list.Add_DrawColumnHeader({
-        param($sender, $e)
-        $e.Graphics.FillRectangle((New-Object Drawing.SolidBrush $UiSurface2), $e.Bounds)
-        $r = New-Object Drawing.RectangleF(($e.Bounds.X + 8), ($e.Bounds.Y + 5), $e.Bounds.Width, $e.Bounds.Height)
-        $e.Graphics.DrawString($e.Header.Text, (New-Font 9 'Bold'), (New-Object Drawing.SolidBrush $UiMuted), $r)
-    })
-    $list.Add_DrawItem({ param($sender, $e) $e.DrawDefault = $false })
-    $list.Add_DrawSubItem({
-        param($sender, $e)
-        $bg = if ($e.Item.Selected) { [Drawing.Color]::FromArgb(30, 64, 104) } else { $UiSurface }
-        $e.Graphics.FillRectangle((New-Object Drawing.SolidBrush $bg), $e.Bounds)
-        $color = if ($e.ColumnIndex -eq 0) { $e.Item.ForeColor } elseif ($e.ColumnIndex -eq 1) { $UiText } else { $UiMuted }
-        $flags = [Windows.Forms.TextFormatFlags]'VerticalCenter, EndEllipsis, SingleLine'
-        $rect = New-Object Drawing.Rectangle(($e.Bounds.X + 8), $e.Bounds.Y, ($e.Bounds.Width - 10), $e.Bounds.Height)
-        $font = if ($e.ColumnIndex -eq 1) { New-Font 10 'Bold' } else { $sender.Font }
-        [Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $font, $rect, $color, $flags)
-    })
-    $il = New-Object Windows.Forms.ImageList; $il.ImageSize = New-Object Drawing.Size(1, 32); $list.SmallImageList = $il
-    [void]$list.Columns.Add('Durum', 110)
-    [void]$list.Columns.Add('Ne bulundu', 300)
-    [void]$list.Columns.Add('Ne yapmalı', 440)
-    $list.Add_Resize({ param($sender, $e) $sender.Columns[2].Width = [math]::Max(200, $sender.ClientSize.Width - $sender.Columns[0].Width - $sender.Columns[1].Width) })
-    return $list
+# ------------------------------------------------------------------ kart listesi
+
+# "3 dakika önce", "dün" gibi sade bir zaman anlatimi
+function Get-RelativeTime($t) {
+    if (-not $t) { return 'henüz yapılmadı' }
+    $d = (Get-Date) - [datetime]$t
+    if ($d.TotalMinutes -lt 2) { return 'az önce' }
+    if ($d.TotalMinutes -lt 60) { return '{0} dakika önce' -f [int]$d.TotalMinutes }
+    if ($d.TotalHours -lt 24) { return '{0} saat önce' -f [int]$d.TotalHours }
+    if ($d.TotalHours -lt 48) { return 'dün' }
+    if ($d.TotalDays -lt 14) { return '{0} gün önce' -f [int]$d.TotalDays }
+    return '{0:dd.MM.yyyy}' -f [datetime]$t
 }
 
-function Set-FindingItems($list, $findings) {
-    $list.BeginUpdate(); $list.Items.Clear()
-    foreach ($f in $findings) {
-        $label = if ($f.level -eq 'RED') { '●  Tehlikeli' } elseif ((Get-FindingTab $f) -eq 'threat') { '●  Şüpheli' } else { '●  Bilgi' }
-        $item = New-Object Windows.Forms.ListViewItem($label)
-        [void]$item.SubItems.Add($f.title); [void]$item.SubItems.Add($f.detail)
-        $item.ForeColor = $UiLevel[[string]$f.level]
-        $item.ToolTipText = $f.detail
-        $item.Tag = $f
-        [void]$list.Items.Add($item)
+function New-RoundRegion([int]$w, [int]$h, [int]$r) {
+    $p = New-Object Drawing.Drawing2D.GraphicsPath
+    $d = $r * 2
+    $p.AddArc(0, 0, $d, $d, 180, 90); $p.AddArc(($w - $d), 0, $d, $d, 270, 90)
+    $p.AddArc(($w - $d), ($h - $d), $d, $d, 0, 90); $p.AddArc(0, ($h - $d), $d, $d, 90, 90)
+    $p.CloseFigure()
+    $reg = New-Object Drawing.Region $p
+    $p.Dispose()
+    return $reg
+}
+
+# Renkli seviye noktasi (halkali)
+function New-LevelDot([Drawing.Color]$c) {
+    $d = New-Object Windows.Forms.Panel
+    $d.Size = New-Object Drawing.Size(28, 28); $d.BackColor = [Drawing.Color]::Transparent
+    $d.Tag = $c
+    $d.Add_Paint({
+        param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $col = [Drawing.Color]$s.Tag
+        $halo = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(60, $col))
+        $dot = New-Object Drawing.SolidBrush $col
+        $g.FillEllipse($halo, 0, 0, 27, 27); $g.FillEllipse($dot, 7, 7, 13, 13)
+        $halo.Dispose(); $dot.Dispose()
+    })
+    return $d
+}
+
+# Kartin ustune gelince hafifce acilir (cocuk denetimlerde de calisir)
+function Add-CardHover($card) {
+    $enter = { param($s, $e) $c = $s; while ($c -and $c.Name -ne 'card') { $c = $c.Parent }; if ($c) { $c.BackColor = $UiSurface2 } }
+    $leave = {
+        param($s, $e)
+        $c = $s; while ($c -and $c.Name -ne 'card') { $c = $c.Parent }
+        if ($c -and -not $c.ClientRectangle.Contains($c.PointToClient([Windows.Forms.Cursor]::Position))) { $c.BackColor = $UiSurface }
     }
-    $list.EndUpdate()
+    foreach ($ctl in (@($card) + @($card.Controls))) {
+        $ctl.Add_MouseEnter($enter); $ctl.Add_MouseLeave($leave)
+    }
 }
 
+# Genel kart: solda $lead (nokta ya da simge), kalin baslik, soluk ayrinti, sagda dugmeler (soldan saga sirayla verilir)
+function New-Card([int]$w, [int]$h, $lead, [string]$title, [string]$detail, $buttons, [int]$detailLines = 1, $tips = $null) {
+    $card = New-Object Windows.Forms.Panel
+    $card.Name = 'card'; $card.Size = New-Object Drawing.Size($w, $h); $card.BackColor = $UiSurface
+    $card.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 10)
+    $x = 18
+    if ($lead) {
+        $lead.Location = New-Object Drawing.Point(18, [int](($h - $lead.Height) / 2))
+        $card.Controls.Add($lead); $x = 18 + $lead.Width + 14
+    }
+    $bx = $w - 16
+    $btnList = @($buttons | Where-Object { $_ })
+    for ($i = $btnList.Count - 1; $i -ge 0; $i--) {
+        $b = $btnList[$i]
+        $b.AutoSize = $false; $b.Height = 36
+        $b.Width = [math]::Max(110, [Windows.Forms.TextRenderer]::MeasureText($b.Text, $b.Font).Width + 36)
+        $bx -= $b.Width
+        $b.Location = New-Object Drawing.Point($bx, [int](($h - $b.Height) / 2))
+        $card.Controls.Add($b); $b.Anchor = 'Top, Right'
+        $bx -= 10
+    }
+    $textW = [math]::Max(80, $bx - 6 - $x)
+    $detH = 19 * $detailLines + 2
+    $top = [int](($h - (24 + 2 + $detH)) / 2)
+    $ttl = New-Object Windows.Forms.Label
+    $ttl.AutoSize = $false; $ttl.AutoEllipsis = $true; $ttl.Text = $title; $ttl.Font = New-Font 11 'Bold'
+    $ttl.ForeColor = $UiText; $ttl.BackColor = [Drawing.Color]::Transparent
+    $ttl.Location = New-Object Drawing.Point($x, $top); $ttl.Size = New-Object Drawing.Size($textW, 24)
+    $det = New-Object Windows.Forms.Label
+    $det.AutoSize = $false; $det.AutoEllipsis = $true; $det.Text = $detail; $det.Font = New-Font 9.5
+    $det.ForeColor = $UiMuted; $det.BackColor = [Drawing.Color]::Transparent
+    $det.Location = New-Object Drawing.Point($x, ($top + 26)); $det.Size = New-Object Drawing.Size($textW, $detH)
+    $card.Controls.Add($ttl); $card.Controls.Add($det)
+    $ttl.Anchor = 'Top, Left, Right'; $det.Anchor = 'Top, Left, Right'
+    if ($tips -and $detail) { $tips.SetToolTip($ttl, $detail); $tips.SetToolTip($det, $detail) }
+    Add-CardHover $card
+    $card.Add_Resize({
+        param($s, $e)
+        if ($s.Width -gt 20 -and $s.Height -gt 20) { $old = $s.Region; $s.Region = New-RoundRegion $s.Width $s.Height 8; if ($old) { $old.Dispose() } }
+    })
+    $card.Region = New-RoundRegion $w $h 8
+    return $card
+}
+
+# Davranis bekcisi bulgusunun dosyasi karantinaya alinabilir mi (Ayrintilar penceresiyle ayni kosul)
+function Test-CanQuarantine($finding) {
+    return ([string]$finding.key -like 'behavior:*' -and $finding.path -and -not (Test-GuardSystemPath ([string]$finding.path)) -and
+        (Test-Path -LiteralPath $finding.path -PathType Leaf))
+}
+
+# Onay sorar, dosyayi karantinaya alir. Basarili olursa $true.
+function Confirm-QuarantineFinding($finding) {
+    $a = [Windows.Forms.MessageBox]::Show(
+        "Dosya, açılamayacağı Karantina klasörüne taşınacak:`n`n$($finding.path)`n`nProgram hâlâ çalışıyorsa önce kapatın. Devam edilsin mi?",
+        'Karantinaya al', 'YesNo', 'Question')
+    if ($a -ne 'Yes') { return $false }
+    if (Invoke-Quarantine ([string]$finding.path)) {
+        [Windows.Forms.MessageBox]::Show('Dosya karantinaya alındı.', 'Cortmed Security') | Out-Null
+        return $true
+    }
+    [Windows.Forms.MessageBox]::Show('Dosya karantinaya alınamadı. Program hâlâ çalışıyor olabilir; bilgisayarı yeniden başlatıp tekrar deneyin.', 'Cortmed Security') | Out-Null
+    return $false
+}
+
+# Bir bulgu = bir kart. $onDone: { param($card) } -> guvenilir isaretlenince ya da karantinaya alinca cagrilir.
+function New-FindingCard($finding, [int]$w, $tips, [scriptblock]$onDone) {
+    $levelKey = if ($UiLevel.ContainsKey([string]$finding.level)) { [string]$finding.level } else { 'NONE' }
+    $detail = (([string]$finding.detail) -replace '\s+', ' ').Trim()
+    $ctx = @{ finding = $finding; done = $onDone }
+    $more = New-FlatButton 'Ayrıntılar' $true
+    $more.Tag = $ctx
+    $more.Add_Click({
+        param($s, $e)
+        $t = $s.Tag; $card = $s.Parent
+        if (Show-Report $s.FindForm() $t.finding) { if ($t.done) { & $t.done $card } }
+    })
+    $buttons = @()
+    if (Test-CanQuarantine $finding) {
+        $quar = New-FlatButton 'Karantinaya al'
+        $quar.Tag = $ctx
+        $quar.Add_Click({
+            param($s, $e)
+            $t = $s.Tag; $card = $s.Parent
+            if (Confirm-QuarantineFinding $t.finding) {
+                if ($card.Parent) { $card.Parent.Tag = $null }
+                if ($t.done) { & $t.done $card }
+            }
+        })
+        $buttons += $quar
+    }
+    $buttons += $more
+    return (New-Card $w 74 (New-LevelDot $UiLevel[$levelKey]) ([string]$finding.title) $detail $buttons 1 $tips)
+}
+
+# Onerilerimiz kategorisi (Windows korumalari, guncellemeler...) = bir kart + tek eylem dugmesi
+function New-AdviceCard($grp, [int]$w, $tips, [scriptblock]$onAction) {
+    $c = $grp.cat
+    $ico = New-Object Windows.Forms.Label
+    $ico.AutoSize = $false; $ico.Size = New-Object Drawing.Size(46, 46); $ico.Text = $c.icon
+    $ico.TextAlign = 'MiddleCenter'; $ico.Font = New-Font 17 'Regular' 'Segoe UI Emoji'
+    $ico.ForeColor = $UiAccent; $ico.BackColor = $UiSurface2
+    $btn = New-FlatButton $c.button $true
+    $btn.Tag = @{ grp = $grp; run = $onAction }
+    $btn.Add_Click({ param($s, $e) $t = $s.Tag; & $t.run $t.grp })
+    return (New-Card $w 96 $ico ([string]$c.title) ($c.text -f $grp.items.Count) @($btn) 2 $tips)
+}
+
+# Bolum basligi (Durdurulan programlar gibi)
+function New-SectionHeader([string]$title, [string]$sub, [int]$w) {
+    $h = New-Object Windows.Forms.Panel
+    $h.Name = 'header'; $h.BackColor = $UiBg
+    $h.Size = New-Object Drawing.Size($w, $(if ($sub) { 58 } else { 32 }))
+    $h.Margin = New-Object Windows.Forms.Padding(0, 6, 0, 4)
+    $t = New-Label $title 2 2 $UiAccent (New-Font 11.5 'Bold')
+    $h.Controls.Add($t)
+    if ($sub) {
+        $s = New-Label $sub 2 28 $UiMuted (New-Font 9.5) ($w - 20)
+        $h.Controls.Add($s)
+    }
+    return $h
+}
+
+function Get-CardWidth($flow) { return [math]::Max(300, $flow.ClientSize.Width - 22) }
+
+function Set-FlowWidths($flow) {
+    $w = Get-CardWidth $flow
+    foreach ($c in $flow.Controls) { if (($c.Name -eq 'card' -or $c.Name -eq 'header') -and $c.Width -ne $w) { $c.Width = $w } }
+}
+
+# Kaydirilabilir kart akisi
+function New-CardFlow {
+    $flow = New-Object Windows.Forms.FlowLayoutPanel
+    $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false
+    $flow.AutoScroll = $true; $flow.BackColor = $UiBg
+    $flow.Padding = New-Object Windows.Forms.Padding(0, 4, 0, 8)
+    $flow.Add_Resize({ param($s, $e) Set-FlowWidths $s })
+    return $flow
+}
+
+function Clear-Flow($flow) {
+    foreach ($c in @($flow.Controls)) { $c.Dispose() }
+}
+
+# Bulgulari kart olarak akisin sonuna ekler (once Clear-Flow / SuspendLayout cagiran yapar)
+function Add-FindingCards($flow, $findings, $tips, [scriptblock]$onDone) {
+    $w = Get-CardWidth $flow
+    foreach ($f in @($findings)) { $flow.Controls.Add((New-FindingCard $f $w $tips $onDone)) }
+}
 # Dosya raporu penceresi. Kullanici dosyaya guvenirse $true dondurur.
 function Show-Report($owner, $finding) {
     # Dugme olaylari ShowDialog sirasinda bu kapsamda calisir: $f, $finding ve $result burada tanimli olmali
@@ -1495,21 +1833,9 @@ function New-ReportForm($finding) {
         [void]$bar.Controls.Add($open)
     }
     # Davranis bekcisi bulgusu (durdurulmayan ya da kapatilan program): dosyayi mevcut karantina islemiyle kaldir
-    if ([string]$finding.key -like 'behavior:*' -and $finding.path -and -not (Test-GuardSystemPath ([string]$finding.path)) -and
-        (Test-Path -LiteralPath $finding.path -PathType Leaf)) {
+    if (Test-CanQuarantine $finding) {
         $quar = New-FlatButton 'Karantinaya al'
-        $quar.Add_Click({
-            $a = [Windows.Forms.MessageBox]::Show(
-                "Dosya, açılamayacağı Karantina klasörüne taşınacak:`n`n$($finding.path)`n`nProgram hâlâ çalışıyorsa önce kapatın. Devam edilsin mi?",
-                'Karantinaya al', 'YesNo', 'Question')
-            if ($a -ne 'Yes') { return }
-            if (Invoke-Quarantine ([string]$finding.path)) {
-                [Windows.Forms.MessageBox]::Show('Dosya karantinaya alındı.', 'Cortmed Security') | Out-Null
-                $f.Close()
-            } else {
-                [Windows.Forms.MessageBox]::Show('Dosya karantinaya alınamadı. Program hâlâ çalışıyor olabilir; bilgisayarı yeniden başlatıp tekrar deneyin.', 'Cortmed Security') | Out-Null
-            }
-        })
+        $quar.Add_Click({ if (Confirm-QuarantineFinding $finding) { $f.Close() } })
         [void]$bar.Controls.Add($quar)
     }
     if ([string]$finding.key -like 'file:*' -and $finding.level -in 'RED', 'YELLOW') {
@@ -1531,20 +1857,22 @@ function New-ReportForm($finding) {
 }
 
 function Show-FindingList($owner, [string]$title, $findings) {
-    $f = New-DarkForm "Cortmed Security - $title" 900 520
-    $f.Controls.Add((New-Label 'Ayrıntı için satıra çift tıklayın.' 18 14 $UiMuted (New-Font 9)))
+    $f = New-DarkForm "Cortmed Security - $title" 900 560
+    $tips = New-Object Windows.Forms.ToolTip
     $wrap = New-Object Windows.Forms.Panel
-    $wrap.Location = New-Object Drawing.Point(16, 40); $wrap.Size = New-Object Drawing.Size(852, 420); $wrap.Anchor = 'Top, Bottom, Left, Right'
-    $list = New-FindingListView $f
-    $list.Add_DoubleClick({
-        $sel = $list.SelectedItems
-        if ($sel.Count -gt 0 -and $sel[0].Tag) {
-            if (Show-Report $f $sel[0].Tag) { $sel[0].Remove() }
-        }
-    })
-    Set-FindingItems $list $findings
-    $wrap.Controls.Add($list)
-    $f.Controls.Add($wrap)
+    $wrap.Dock = 'Fill'; $wrap.Padding = New-Object Windows.Forms.Padding(16, 8, 16, 8); $wrap.BackColor = $UiBg
+    $flow = New-CardFlow
+    # Guvenilir isaretlenen ya da karantinaya alinan bulgu listeden kalkar
+    $onDone = { param($card) if ($card -and $card.Parent) { $card.Parent.Controls.Remove($card); $card.Dispose() } }
+    $flow.SuspendLayout()
+    Add-FindingCards $flow $findings $tips $onDone
+    $flow.ResumeLayout()
+    $wrap.Controls.Add($flow)
+    $hint = New-Object Windows.Forms.Label
+    $hint.Dock = 'Top'; $hint.Height = 34; $hint.TextAlign = 'MiddleLeft'; $hint.Padding = New-Object Windows.Forms.Padding(18, 0, 0, 0)
+    $hint.Text = 'Ayrıntı için ilgili kartın "Ayrıntılar" düğmesine tıklayın.'
+    $hint.ForeColor = $UiMuted; $hint.Font = New-Font 9
+    $f.Controls.AddRange(@($wrap, $hint))
     [void]$f.ShowDialog($owner)
 }
 
@@ -1566,32 +1894,72 @@ function New-GuardPromptForm($prompt, [scriptblock]$answer, $state = $null) {
     $publisher = if ([string]$prompt.publisher) { [string]$prompt.publisher } else { 'bilinmiyor (imzasız)' }
     $reasons = @($prompt.reasons | Where-Object { $_ } | ForEach-Object { [string]$_ })
 
-    $f = New-DarkForm "Cortmed şüpheli bir programı durdurdu: $name" 640 500
+    $f = New-DarkForm "Cortmed şüpheli bir programı durdurdu: $name" 640 580
     $f.StartPosition = 'CenterScreen'; $f.TopMost = $true
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
     $f.Tag = @{ id = [string]$prompt.id; path = [string]$prompt.path; answer = $answer; state = $state; decision = $null; result = $null }
 
-    $head = New-Object Windows.Forms.Label
-    $head.Dock = 'Top'; $head.Height = 54; $head.Padding = New-Object Windows.Forms.Padding(16, 0, 0, 0)
-    $head.TextAlign = 'MiddleLeft'; $head.Text = 'Şüpheli bir program durduruldu'
-    $head.Font = New-Font 13 'Bold'
-    $head.ForeColor = [Drawing.Color]::White; $head.BackColor = $UiLevel.RED
+    # Ust bant: buyuk uyari simgesi, baslik ve ne oldugu
+    $head = New-Object Windows.Forms.Panel
+    $head.Dock = 'Top'; $head.Height = 112; $head.BackColor = [Drawing.Color]::FromArgb(58, 24, 32)
+    $warn = New-Object Windows.Forms.PictureBox
+    $warn.Image = New-WarnBitmap 72; $warn.SizeMode = 'CenterImage'; $warn.BackColor = [Drawing.Color]::Transparent
+    $warn.Size = New-Object Drawing.Size(80, 80); $warn.Location = New-Object Drawing.Point(18, 16)
+    $head.Controls.Add($warn)
+    $head.Controls.Add((New-Label 'Şüpheli bir program durduruldu' 108 16 ([Drawing.Color]::White) (New-Font 16 'Bold')))
+    $head.Controls.Add((New-Label 'Cortmed bu programı ve başlattığı programları dondurdu. Siz karar verene kadar hiçbir şey yapamaz.' 110 54 ([Drawing.Color]::FromArgb(236, 214, 218)) (New-Font 10) 490))
 
     $body = New-Object Windows.Forms.FlowLayoutPanel
     $body.Dock = 'Fill'; $body.FlowDirection = 'TopDown'; $body.WrapContents = $false; $body.AutoScroll = $true
-    $body.Padding = New-Object Windows.Forms.Padding(18, 14, 18, 4); $body.BackColor = $UiBg
-    $lines = @(
-        (New-Label $name 0 0 $UiText (New-Font 12 'Bold') 570)
-        (New-Label "Yayıncı: $publisher" 0 0 $UiMuted (New-Font 9.5) 570)
-        (New-Label ([string]$prompt.path) 0 0 $UiMuted (New-Font 9) 570)
-        (New-Label 'Cortmed bu programı ve başlattığı programları dondurdu. Siz karar verene kadar hiçbir şey yapamaz.' 0 0 $UiText (New-Font 10) 570)
-        (New-Label 'Neden durduruldu:' 0 0 $UiText (New-Font 10 'Bold') 570)
-    )
-    foreach ($r in $reasons) { $lines += New-Label "•  $r" 0 0 $UiText (New-Font 10) 560 }
-    foreach ($l in $lines) { $l.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 8); [void]$body.Controls.Add($l) }
+    $body.Padding = New-Object Windows.Forms.Padding(18, 16, 18, 4); $body.BackColor = $UiBg
+
+    # Programin kendi simgesi, adi, yayincisi ve yolu
+    $progBmp = $null
+    try {
+        if ($prompt.path -and (Test-Path -LiteralPath ([string]$prompt.path) -PathType Leaf)) {
+            $ic = [Drawing.Icon]::ExtractAssociatedIcon([string]$prompt.path)
+            if ($ic) { $progBmp = $ic.ToBitmap() }
+        }
+    } catch { }
+    if (-not $progBmp) { try { $progBmp = [Drawing.SystemIcons]::Application.ToBitmap() } catch { } }
+    $card = New-Object Windows.Forms.Panel
+    $card.Size = New-Object Drawing.Size(570, 84); $card.BackColor = $UiSurface
+    $card.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 14)
+    if ($progBmp) {
+        $pic = New-Object Windows.Forms.PictureBox
+        $pic.Image = $progBmp; $pic.SizeMode = 'CenterImage'; $pic.BackColor = $UiSurface2
+        $pic.Size = New-Object Drawing.Size(52, 52); $pic.Location = New-Object Drawing.Point(16, 16)
+        $card.Controls.Add($pic)
+    }
+    foreach ($row in @(
+            @{ t = $name; y = 10; c = $UiText; f = (New-Font 12 'Bold') }
+            @{ t = "Yayıncı: $publisher"; y = 38; c = $UiMuted; f = (New-Font 9.5) }
+            @{ t = [string]$prompt.path; y = 58; c = $UiMuted; f = (New-Font 9) })) {
+        $l = New-Object Windows.Forms.Label
+        $l.AutoSize = $false; $l.AutoEllipsis = $true; $l.Text = $row.t; $l.Font = $row.f; $l.ForeColor = $row.c
+        $l.BackColor = [Drawing.Color]::Transparent
+        $l.Location = New-Object Drawing.Point(80, $row.y); $l.Size = New-Object Drawing.Size(478, 22)
+        $card.Controls.Add($l)
+    }
+    [void]$body.Controls.Add($card)
+
+    $why = New-Label 'Neden durduruldu:' 0 0 $UiText (New-Font 10.5 'Bold') 570
+    $why.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 8)
+    [void]$body.Controls.Add($why)
+    foreach ($r in $reasons) {
+        $row = New-Object Windows.Forms.FlowLayoutPanel
+        $row.FlowDirection = 'LeftToRight'; $row.WrapContents = $false; $row.AutoSize = $true; $row.AutoSizeMode = 'GrowAndShrink'
+        $row.BackColor = $UiBg; $row.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 6)
+        $bullet = New-Label '•' 0 0 $UiLevel.RED (New-Font 12 'Bold')
+        $bullet.Margin = New-Object Windows.Forms.Padding(2, 0, 8, 0)
+        $txt = New-Label $r 0 0 $UiText (New-Font 10) 520
+        $txt.Margin = New-Object Windows.Forms.Padding(0, 3, 0, 0)
+        $row.Controls.AddRange(@($bullet, $txt))
+        [void]$body.Controls.Add($row)
+    }
 
     $bar = New-Object Windows.Forms.FlowLayoutPanel
-    $bar.Dock = 'Bottom'; $bar.Height = 62; $bar.Padding = New-Object Windows.Forms.Padding(16, 10, 16, 10); $bar.BackColor = $UiBg
+    $bar.Dock = 'Bottom'; $bar.Height = 74; $bar.Padding = New-Object Windows.Forms.Padding(18, 14, 16, 10); $bar.BackColor = $UiBg
     # Dugmeler kapanis degiskeni kullanmaz: bilgi formun ve dugmenin Tag'inde (pencere sonradan tiklanir)
     $onChoice = {
         param($sender, $e)
@@ -1607,11 +1975,14 @@ function New-GuardPromptForm($prompt, [scriptblock]$answer, $state = $null) {
         if ($t.state -and $t.state.killPaths -ne $null -and $t.decision -eq 'kill' -and $t.path) { $t.state.killPaths[$t.id] = $t.path }
         $form.Close()
     }
-    $kill = New-FlatButton 'Programı kapat (önerilen)' $true
+    $kill = New-FlatButton 'Programı kapat (önerilen)' $false 'danger'
+    $kill.Height = 44
     $kill.Tag = 'kill'; $kill.Add_Click($onChoice)
-    $allow = New-FlatButton 'İzin ver, devam etsin'
+    $allow = New-FlatButton 'İzin ver, devam etsin' $false 'muted'
+    $allow.Height = 44
     $allow.Tag = 'allow'; $allow.Add_Click($onChoice)
-    $more = New-FlatButton 'Ayrıntılar'
+    $more = New-FlatButton 'Ayrıntılar' $false 'link'
+    $more.Height = 44; $more.Margin = New-Object Windows.Forms.Padding(0)
     $report = "Program: $([string]$prompt.path)`r`nYayıncı: $publisher`r`nDavranış puanı: $([string]$prompt.score)`r`n`r`nNedenler:`r`n" +
         (($reasons | ForEach-Object { "- $_" }) -join "`r`n")
     $more.Tag = [pscustomobject]@{ key = "guard:$($prompt.id)"; level = 'RED'; title = "Durdurulan program: $name"
@@ -1919,51 +2290,64 @@ function Show-Panel {
 
     $form = New-Object Windows.Forms.Form
     $form.Text = 'Cortmed Security'
-    $form.Size = New-Object Drawing.Size(940, 700)
-    $form.MinimumSize = New-Object Drawing.Size(800, 600)
+    $form.Size = New-Object Drawing.Size(940, 780)
+    $form.MinimumSize = New-Object Drawing.Size(800, 660)
     $form.StartPosition = 'CenterScreen'
     $form.Font = New-Font 10
     $form.BackColor = $UiBg; $form.ForeColor = $UiText
     $icon = Get-CortmedIcon; if ($icon) { $form.Icon = $icon }
+    Set-WindowChrome $form
     $tips = New-Object Windows.Forms.ToolTip
 
-    $state = @{ level = 'NONE'; symbol = '…'; title = ''; sub = ''; tab = ''; checks = @(); scan = $null; harden = $null; guardSetup = $null }
+    $state = @{ level = 'NONE'; symbol = 'dots'; title = ''; line = ''; tab = ''; checks = @(); scan = $null; harden = $null; guardSetup = $null }
+    $fTitle = New-Font 21 'Bold'; $fLine = New-Font 10.5; $fCheck = New-Font 9
 
-    # Durum karti: halka, baslik, aciklama ve alt satirda koruma kontrolleri
+    # Durum alani: buyuk kalkan (duruma gore yesil / sari / kirmizi), baslik, tek satir bilgi ve ikincil kontroller
     $status = New-Object Windows.Forms.Panel
-    $status.Dock = 'Top'; $status.Height = 178; $status.BackColor = $UiBg
-    $status.Padding = New-Object Windows.Forms.Padding(16, 14, 16, 6)
-    $card = New-Object Windows.Forms.Panel
-    $card.Dock = 'Fill'; $card.BackColor = $UiSurface
-    $card.GetType().GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($card, $true, $null)
-    $card.Add_Paint({
+    $status.Dock = 'Top'; $status.Height = 262; $status.BackColor = $UiBg
+    $status.GetType().GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($status, $true, $null)
+    $status.Add_Paint({
         param($sender, $e)
         $g = $e.Graphics
         $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
         $c = $UiLevel[$state.level]
-        $cx = 28; $cy = 22
-        $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(40, $c))), ($cx - 6), ($cy - 6), 104, 104)
-        $g.DrawEllipse((New-Object Drawing.Pen ($c, 6)), $cx, $cy, 92, 92)
-        $fmt = New-Object Drawing.StringFormat; $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
-        $g.DrawString($state.symbol, (New-Font 30 'Bold'), (New-Object Drawing.SolidBrush $c), (New-Object Drawing.RectangleF($cx, $cy, 92, 92)), $fmt)
-        $g.DrawString($state.title, (New-Font 19 'Bold'), (New-Object Drawing.SolidBrush $UiText), 142, 24)
-        $g.DrawString($state.sub, (New-Font 10), (New-Object Drawing.SolidBrush $UiMuted),
-            (New-Object Drawing.RectangleF(144, 64, ($sender.Width - 160), 44)))
-        # Koruma kontrolleri: kullanici neyin calistigini gorsun
-        $x = 144; $y = 116
-        foreach ($chk in $state.checks) {
-            $col = if ($chk.ok) { $UiLevel.OK } else { $UiLevel.YELLOW }
-            $txt = $(if ($chk.ok) { '✓ ' } else { '! ' }) + $chk.text
-            $tw = [int]$g.MeasureString($txt, (New-Font 9.5 'Bold')).Width
-            # Sigmazsa alt satira
-            if ($x -gt 144 -and ($x + $tw) -gt ($sender.Width - 12)) { $x = 144; $y += 22 }
-            $g.DrawString($txt, (New-Font 9.5 'Bold'), (New-Object Drawing.SolidBrush $col), $x, $y)
-            $x += $tw + 22
+        $cx = [int]($sender.Width / 2)
+        # Kalkanin arkasinda yumusak isik
+        foreach ($i in 0..6) {
+            $r = 96 - $i * 11
+            $br = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(9 + $i * 2, $c))
+            $g.FillEllipse($br, ($cx - $r), (70 - $r), ($r * 2), ($r * 2)); $br.Dispose()
         }
-        $g.FillRectangle((New-Object Drawing.SolidBrush $c), 0, 0, 4, $sender.Height)
+        Draw-Shield $g ($cx - 45) 14 112 $c $state.symbol
+        $fmt = New-Object Drawing.StringFormat; $fmt.Alignment = 'Center'
+        $tb = New-Object Drawing.SolidBrush $UiText
+        $g.DrawString($state.title, $fTitle, $tb, (New-Object Drawing.RectangleF(0, 134, $sender.Width, 38)), $fmt)
+        $mb = New-Object Drawing.SolidBrush $UiMuted
+        $g.DrawString($state.line, $fLine, $mb, (New-Object Drawing.RectangleF(24, 175, ($sender.Width - 48), 24)), $fmt)
+        # Koruma kontrolleri: kucuk ve soluk, ama neyin calistigi gorunsun
+        $rows = @(); $cur = @(); $curW = 0; $maxW = $sender.Width - 60
+        foreach ($chk in $state.checks) {
+            $tw = [int]$g.MeasureString($chk.text, $fCheck).Width + 22
+            if ($cur.Count -and ($curW + $tw) -gt $maxW) { $rows += , @($cur); $cur = @(); $curW = 0 }
+            $cur += , @($chk, $tw); $curW += $tw + 14
+        }
+        if ($cur.Count) { $rows += , @($cur) }
+        $y = 212
+        foreach ($row in $rows) {
+            $total = 0; foreach ($it in $row) { $total += $it[1] + 14 }
+            $x = [int](($sender.Width - $total + 14) / 2)
+            foreach ($it in $row) {
+                $col = if ($it[0].ok) { $UiLevel.OK } else { $UiLevel.YELLOW }
+                $db = New-Object Drawing.SolidBrush $col
+                $g.FillEllipse($db, $x, ($y + 5), 8, 8); $db.Dispose()
+                $g.DrawString($it[0].text, $fCheck, $mb, ($x + 14), $y)
+                $x += $it[1] + 14
+            }
+            $y += 22
+        }
+        $tb.Dispose(); $mb.Dispose()
     })
-    $card.Add_Resize({ $card.Invalidate() })
-    $status.Controls.Add($card)
+    $status.Add_Resize({ $status.Invalidate() })
 
     # Sekmeler
     $tabsBar = New-Object Windows.Forms.Panel
@@ -1978,22 +2362,16 @@ function Show-Panel {
         $tabsBar.Controls.Add($tb)
     }
 
-    # Icerik: tehdit listesi / bos durum / oneri kartlari
+    # Icerik: tehdit kartlari / bos durum / oneri kartlari
     $content = New-Object Windows.Forms.Panel
     $content.Dock = 'Fill'; $content.Padding = New-Object Windows.Forms.Padding(16, 0, 16, 0); $content.BackColor = $UiBg
-    $list = New-FindingListView $form
-    $list.Add_DoubleClick({
-        $sel = $list.SelectedItems
-        if ($sel.Count -gt 0 -and $sel[0].Tag) { if (Show-Report $form $sel[0].Tag) { & $render } }
-    })
+    $threatFlow = New-CardFlow
     $empty = New-Object Windows.Forms.Label
     $empty.Dock = 'Fill'; $empty.TextAlign = 'MiddleCenter'; $empty.BackColor = $UiSurface
     $empty.Font = New-Font 13 'Bold'; $empty.ForeColor = $UiLevel.OK
-    $adviceFlow = New-Object Windows.Forms.FlowLayoutPanel
-    $adviceFlow.Dock = 'Fill'; $adviceFlow.FlowDirection = 'TopDown'; $adviceFlow.WrapContents = $false
-    $adviceFlow.AutoScroll = $true; $adviceFlow.BackColor = $UiBg
-    $content.Controls.AddRange(@($list, $empty, $adviceFlow))
-
+    $adviceFlow = New-CardFlow
+    $content.Controls.AddRange(@($threatFlow, $empty, $adviceFlow))
+    $onDone = { param($card) & $render }
     # Alt cubuk: iki ana is + ayarlar
     $bottom = New-Object Windows.Forms.Panel
     $bottom.Dock = 'Bottom'; $bottom.Height = 70; $bottom.BackColor = $UiBg
@@ -2012,6 +2390,7 @@ function Show-Panel {
     $right.Controls.Add($btnSettings)
     $bottom.Controls.AddRange(@($left, $right))
 
+
     $render = {
         $sum = Get-StatusSummary
         $s = $sum.status
@@ -2021,23 +2400,21 @@ function Show-Panel {
         $guardCheck = Get-GuardCheck $guardState
         $groups = @(Get-AdviceGroups $advice ([bool]$guardCheck.offer) ([string]$guardCheck.hint))
 
-        # Durum karti
+        # Durum alani: kalkanin rengi ve basligi mevcut ozetten gelir (tehlike / bakilacak sey / korunuyor)
         $running = Test-WatcherRunning
-        if ($state.scan) {
-            $state.level = 'NONE'; $state.symbol = '…'; $state.title = 'Taranıyor…'
-            $state.sub = 'Bilgisayarınız taranıyor. Bu birkaç dakika sürebilir; bu sırada bilgisayarınızı kullanmaya devam edebilirsiniz.'
-        } elseif (-not $s) {
-            $state.level = 'NONE'; $state.symbol = '…'; $state.title = 'İlk tarama bekleniyor'
-            $state.sub = 'Cortmed ilk taramayı birkaç dakika içinde kendiliğinden yapacak.'
-        } elseif ($sum.reds) {
-            $state.level = 'RED'; $state.symbol = '!'; $state.title = 'Dikkat: tehdit bulundu'
-            $state.sub = "Bilgisayarınızda $($sum.reds.Count) tehlikeli öğe var. Aşağıdaki listeden ne yapmanız gerektiğini görebilirsiniz."
-        } else {
-            $state.level = 'OK'; $state.symbol = '✓'; $state.title = 'Bilgisayarınız korunuyor'
-            $state.sub = 'Tehdit bulunmadı.'
-            if ($sum.time) { $state.sub += '  Son tarama: {0:dd.MM.yyyy HH:mm}.' -f $sum.time }
-        }
         $sigs = if ($s -and $s.signatures) { '{0:N0} imza' -f [int]$s.signatures } else { 'hazır' }
+        if ($state.scan) {
+            $state.level = 'NONE'; $state.symbol = 'dots'; $state.title = 'Taranıyor…'
+            $state.line = 'Bilgisayarınız taranıyor; bu sırada kullanmaya devam edebilirsiniz.'
+        } elseif (-not $s) {
+            $state.level = 'NONE'; $state.symbol = 'dots'; $state.title = 'İlk tarama bekleniyor'
+            $state.line = 'Cortmed ilk taramayı birkaç dakika içinde kendiliğinden yapacak.'
+        } else {
+            if ($sum.reds) { $state.level = 'RED'; $state.symbol = 'cross'; $state.title = 'Tehlike bulundu' }
+            elseif ($threats -or $groups) { $state.level = 'YELLOW'; $state.symbol = 'alert'; $state.title = 'Bakmanız gereken bir şey var' }
+            else { $state.level = 'OK'; $state.symbol = 'check'; $state.title = 'Bilgisayarınız korunuyor' }
+            $state.line = 'Son tarama: {0}  ·  Veritabanı: {1}' -f (Get-RelativeTime $sum.time), $sigs
+        }
         $engines = 'Defender + YARA' + $(if (Test-ClamReady) { ' + ClamAV' } else { '' })
         $state.checks = @(
             @{ ok = $running; text = $(if ($running) { 'Gerçek zamanlı koruma açık' } else { 'Gerçek zamanlı koruma başlatılıyor' }) }
@@ -2045,7 +2422,7 @@ function Show-Panel {
             @{ ok = [bool](Get-YaraPaths); text = "Tarama: $engines" }
             $guardCheck
         )
-        $card.Invalidate()
+        $status.Invalidate()
 
         # Sekmeler
         $tabThreat.Text = "Tehditler ($($threats.Count))"
@@ -2061,41 +2438,44 @@ function Show-Panel {
         if ($state.tab -eq 'threat') {
             $adviceFlow.Visible = $false
             if ($threats) {
-                Set-FindingItems $list $threats
-                $list.Visible = $true; $empty.Visible = $false
+                $empty.Visible = $false; $threatFlow.Visible = $true
+                # Bulgular degismediyse kartlar yeniden kurulmaz (kaydirma ve ustune gelme korunur)
+                $sig = (@($threats | ForEach-Object { "$($_.key)|$($_.level)|$($_.title)|$($_.detail)" }) -join "`n")
+                if ($threatFlow.Tag -ne $sig) {
+                    $keep = $threatFlow.VerticalScroll.Value
+                    $threatFlow.SuspendLayout(); Clear-Flow $threatFlow
+                    Add-FindingCards $threatFlow $threats $tips $onDone
+                    $threatFlow.ResumeLayout(); $threatFlow.Tag = $sig
+                    $threatFlow.AutoScrollPosition = New-Object Drawing.Point(0, $keep)
+                }
             } else {
-                $list.Visible = $false; $empty.Visible = $true
+                $threatFlow.Visible = $false; $empty.Visible = $true
                 $empty.Text = "✓  Tehdit bulunmadı`n`nCortmed dosyalarınızı arka planda korumaya devam ediyor."
             }
         } else {
-            $list.Visible = $false; $empty.Visible = $false; $adviceFlow.Visible = $true
-            $adviceFlow.SuspendLayout()
-            $adviceFlow.Controls.Clear()
-            if (-not $groups) {
-                $none = New-Label '✓  Şu an bir önerimiz yok. Her şey yolunda.' 0 0 $UiLevel.OK (New-Font 12 'Bold')
-                $none.Margin = New-Object Windows.Forms.Padding(4, 30, 0, 0)
-                $adviceFlow.Controls.Add($none)
+            $threatFlow.Visible = $false; $empty.Visible = $false; $adviceFlow.Visible = $true
+            $sig = (@($groups | ForEach-Object { "$($_.cat.id)|$($_.cat.text)|" + (@($_.items | ForEach-Object { "$($_.key)|$($_.detail)" }) -join ',') }) -join "`n")
+            if ($adviceFlow.Tag -ne $sig) {
+                $keep = $adviceFlow.VerticalScroll.Value
+                $adviceFlow.SuspendLayout(); Clear-Flow $adviceFlow
+                if (-not $groups) {
+                    $none = New-Label '✓  Şu an bir önerimiz yok. Her şey yolunda.' 0 0 $UiLevel.OK (New-Font 12 'Bold')
+                    $none.Margin = New-Object Windows.Forms.Padding(4, 30, 0, 0)
+                    $adviceFlow.Controls.Add($none)
+                }
+                $w = Get-CardWidth $adviceFlow
+                foreach ($grp in $groups) {
+                    if ($grp.cat.id -in 'guard-warn', 'guard-history') {
+                        # Davranis bekcisi gecmisi: bolum basligi altinda her program kendi kartinda
+                        $adviceFlow.Controls.Add((New-SectionHeader $grp.cat.title ($grp.cat.text -f $grp.items.Count) $w))
+                        Add-FindingCards $adviceFlow $grp.items $tips $onDone
+                    } else {
+                        $adviceFlow.Controls.Add((New-AdviceCard $grp $w $tips $runAdvice))
+                    }
+                }
+                $adviceFlow.ResumeLayout(); $adviceFlow.Tag = $sig
+                $adviceFlow.AutoScrollPosition = New-Object Drawing.Point(0, $keep)
             }
-            $w = $adviceFlow.ClientSize.Width - 8
-            foreach ($grp in $groups) {
-                $c = $grp.cat
-                $p = New-Object Windows.Forms.Panel
-                $p.Size = New-Object Drawing.Size($w, 98); $p.BackColor = $UiSurface
-                $p.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 10)
-                $bar = New-Object Windows.Forms.Panel
-                $bar.Dock = 'Left'; $bar.Width = 4; $bar.BackColor = $UiAccent
-                $ico = New-Label $c.icon 18 26 $UiAccent (New-Font 20 'Regular' 'Segoe UI Emoji')
-                $ttl = New-Label $c.title 70 16 $UiText (New-Font 11.5 'Bold')
-                $txt = New-Label ($c.text -f $grp.items.Count) 70 44 $UiMuted (New-Font 9.5) ($w - 300)
-                $btn = New-FlatButton $c.button
-                $btn.AutoSize = $false; $btn.Width = 190; $btn.Height = 38
-                $btn.Location = New-Object Drawing.Point(($w - 210), 30)
-                $btn.Tag = $grp
-                $btn.Add_Click({ param($sender, $e) & $runAdvice $sender.Tag })
-                $p.Controls.AddRange(@($bar, $ico, $ttl, $txt, $btn))
-                $adviceFlow.Controls.Add($p)
-            }
-            $adviceFlow.ResumeLayout()
         }
     }
 
@@ -2162,15 +2542,6 @@ function Show-Panel {
         & $render
     })
     $btnSettings.Add_Click({ Show-Settings $form; & $render })
-    $adviceFlow.Add_Resize({
-        $w = $adviceFlow.ClientSize.Width - 8
-        foreach ($p in $adviceFlow.Controls) {
-            if ($p -is [Windows.Forms.Panel]) {
-                $p.Width = $w
-                foreach ($ch in $p.Controls) { if ($ch -is [Windows.Forms.Button]) { $ch.Left = $w - 210 } }
-            }
-        }
-    })
 
     $form.Controls.AddRange(@($content, $tabsBar, $bottom, $status, (New-BrandBar)))
     & $render
@@ -2199,6 +2570,7 @@ function Show-Panel {
     [void]$form.ShowDialog()
     $panelMutex.ReleaseMutex()
 }
+
 
 # ------------------------------------------------------------------ giris
 
