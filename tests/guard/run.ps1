@@ -45,8 +45,12 @@ if ($xml -ne $null) {
     foreach ($n in 'ProcessCreate','ProcessTerminate','CreateRemoteThread','ProcessAccess','FileCreate','RegistryEvent') {
         Check "sysmon kural: $n" ($ids -match $n) ''
     }
-    $bad = @($xml.SelectNodes('//RuleGroup/*') | Where-Object { $_.GetAttribute('onmatch') -ne 'include' })
-    Check 'sysmon tum kurallar include' ($bad.Count -eq 0) ''
+    # Hepsi-kaydet olaylari bos exclude, digerleri include (listelenmeyen her sey kapali)
+    $logAll = 'ProcessCreate','ProcessTerminate','CreateRemoteThread'
+    $bad = @($xml.SelectNodes('//RuleGroup/*') | Where-Object {
+        if ($logAll -contains $_.LocalName) { $_.GetAttribute('onmatch') -ne 'exclude' -or $_.HasChildNodes }
+        else { $_.GetAttribute('onmatch') -ne 'include' } })
+    Check 'sysmon kural bicimi (hepsi=bos exclude, digerleri include)' ($bad.Count -eq 0) ''
 }
 
 $py = Get-Command python -ErrorAction SilentlyContinue

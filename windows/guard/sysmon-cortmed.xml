@@ -3,25 +3,19 @@
 <Sysmon schemaversion="4.90">
   <HashAlgorithms>SHA256</HashAlgorithms>
   <EventFiltering>
-    <!-- Olay 1: surec olusturma, hepsi -->
+    <!-- Olay 1: surec olusturma, hepsi (bos exclude = hepsini kaydet) -->
     <RuleGroup name="ProcessCreate" groupRelation="or">
-      <ProcessCreate onmatch="include">
-        <Image condition="contains">\</Image>
-      </ProcessCreate>
+      <ProcessCreate onmatch="exclude" />
     </RuleGroup>
 
     <!-- Olay 5: surec sonlanma, filtresiz (surec agaci cikislara ihtiyac duyar) -->
     <RuleGroup name="ProcessTerminate" groupRelation="or">
-      <ProcessTerminate onmatch="include">
-        <Image condition="contains">\</Image>
-      </ProcessTerminate>
+      <ProcessTerminate onmatch="exclude" />
     </RuleGroup>
 
     <!-- Olay 8: uzak is parcacigi olusturma, hepsi -->
     <RuleGroup name="CreateRemoteThread" groupRelation="or">
-      <CreateRemoteThread onmatch="include">
-        <SourceImage condition="contains">\</SourceImage>
-      </CreateRemoteThread>
+      <CreateRemoteThread onmatch="exclude" />
     </RuleGroup>
 
     <!-- Olay 10: lsass.exe erisimi -->
