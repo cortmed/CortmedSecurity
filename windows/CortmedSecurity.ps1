@@ -8,14 +8,18 @@
               gunde bir tam kontrol ve veritabani guncellemesi yapar
     Daily     Tam kontrol: guvenlik ayarlari, baslangic programlari, Discord, Indirilenler
     Update    Veritabanini guncelle
-    ScanFile  Tek dosya tara (-Path)
-    Lib       Hicbir sey calistirma (fonksiyonlari test icin yukle)
+    ScanFile  Tek dosya tara (-Path); -Json ile tek satir {level,title,reasons} (tarayici koprusu icin)
+    Lib      Hicbir sey calistirma (fonksiyonlari test icin yukle)
 #>
 param(
     [ValidateSet('Panel', 'Watch', 'Daily', 'Update', 'ScanFile', 'InstallClamAV', 'Lib')]
     [string]$Mode = 'Panel',
-    [string]$Path
+    [string]$Path,
+    [switch]$Json
 )
+# -Json yalnizca ScanFile icin. [switch] tur kisiti kalirsa, betigi nokta ile yukleyenlerin (Lib) $json degiskenleri bozulur.
+$ScanJson = [bool]$Json
+Remove-Variable -Name Json
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -427,7 +431,7 @@ function Add-Report($finding, [string]$file, $family, $vt, $sig, $eng, $risk) {
         $report = $report.Replace('— Tarama motorları —', (($why -join "`r`n") + "`r`n`r`n— Tarama motorları —"))
     }
     $finding | Add-Member -Force report $report
-    if ($risk) { $finding | Add-Member -Force score $risk.score }
+    if ($risk) { $finding | Add-Member -Force score $risk.score; $finding | Add-Member -Force riskReasons @($risk.reasons) }
     $zone = Get-ZoneInfo $file
     if ($zone['HostUrl']) { $finding.detail += " (İndirildiği yer: $(Get-UrlHost $zone['HostUrl']))" }
     return $finding
@@ -572,6 +576,19 @@ function Test-FileThreat([string]$file, [switch]$UseVirusTotal, [switch]$SkipCla
 # "Dosya Tara" icin: temiz olsa bile raporu dondurur
 function Get-FileAnalysis([string]$file) {
     return Test-FileThreat $file -UseVirusTotal -AlwaysReport
+}
+
+# Tarayici koprusu icin tek satirlik sonuc: {level,title,reasons}. Seviye bulgunun kendi seviyesidir
+# (RED >= 70, YELLOW >= 15, aksi OK); taranamazsa level ERROR olur. En fazla 5 neden.
+function ConvertTo-ScanJson($finding) {
+    if (-not $finding -or @('RED', 'YELLOW', 'OK') -cnotcontains [string]$finding.level) {
+        $o = [ordered]@{ level = 'ERROR'; title = 'Dosya taranamadı'; reasons = [object[]]@() }
+    } else {
+        $reasons = @(@($finding.riskReasons) | Where-Object { $_ } | ForEach-Object { [string]$_ })
+        if ($reasons.Count -eq 0 -and $finding.detail) { $reasons = @([string]$finding.detail) }
+        $o = [ordered]@{ level = [string]$finding.level; title = [string]$finding.title; reasons = [object[]]@($reasons | Select-Object -First 5) }
+    }
+    return ($o | ConvertTo-Json -Compress)
 }
 
 function Invoke-Quarantine([string]$file) {
@@ -3095,7 +3112,22 @@ switch ($Mode) {
     'Update' { Initialize-Engine; Update-Database }
     'InstallClamAV' { Install-ClamAV }
     'ScanFile' {
-        Initialize-Engine
-        (Get-FileAnalysis $Path).report
+        if ($ScanJson) {
+            # Kopru ciktiyi UTF-8 okur; Turkce harfler borudan bozulmadan gecsin
+            [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+            $line = $null
+            try {
+                Initialize-Engine | Out-Null
+                $line = ConvertTo-ScanJson (@(Get-FileAnalysis $Path) | Select-Object -Last 1)
+            } catch {
+                Write-Log "ScanFile -Json: $_"
+                $line = ConvertTo-ScanJson $null
+            }
+            [Console]::Out.WriteLine([string]$line)
+            [Console]::Out.Flush()
+        } else {
+            Initialize-Engine
+            (Get-FileAnalysis $Path).report
+        }
     }
 }

@@ -547,6 +547,204 @@ else {
     }
 }
 
+# --- Tarayici koprusu (CortmedBrowserHost.exe): Chrome stdio protokolu, yol dogrulama, sahte tarama komutu ---
+# Kayit defterine yazilmaz; kopru gecici klasore derlenir, gercek tarama yerine sahte betik kullanilir.
+function QuoteArg([string]$a) {
+    if ($a -and $a -notmatch '[\s"]') { return $a }
+    $s = [regex]::Replace($a, '(\\*)"', { param($m) $m.Groups[1].Value + $m.Groups[1].Value + '\"' })
+    $s = [regex]::Replace($s, '(\\+)$', { param($m) $m.Groups[1].Value + $m.Groups[1].Value })
+    return '"' + $s + '"'
+}
+function New-HostFrame([string]$json) {
+    $b = [Text.Encoding]::UTF8.GetBytes($json)
+    return [byte[]]([BitConverter]::GetBytes([int]$b.Length) + $b)
+}
+# Kopruye bir cerceve yazar, cerceveli yaniti okur. -KeepOpen: stdin acik kalir (govdeyi okumaya kalkarsa takilir).
+function Invoke-BrowserHost([string]$hostExe, [string[]]$hostArgs, [byte[]]$frame, [switch]$KeepOpen, [int]$TimeoutMs = 60000) {
+    $psi = New-Object Diagnostics.ProcessStartInfo $hostExe
+    $psi.Arguments = (@($hostArgs) | ForEach-Object { QuoteArg $_ }) -join ' '
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    # stdin StreamWriter'i Console.InputEncoding ile kurulur; BOM'lu UTF-8 ise cercevenin onune BOM yazar (Chrome yazmaz)
+    $prevIn = [Console]::InputEncoding
+    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+    try { $p = [Diagnostics.Process]::Start($psi) } finally { [Console]::InputEncoding = $prevIn }
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $ms = New-Object IO.MemoryStream
+    $copy = $p.StandardOutput.BaseStream.CopyToAsync($ms)
+    $inS = $p.StandardInput.BaseStream
+    if ($KeepOpen) {
+        # Yalnizca kucuk cerceve (baslik); stdin acik kalir
+        try { $inS.Write($frame, 0, $frame.Length); $inS.Flush() } catch { }
+    } else {
+        $wr = $null
+        try { $wr = $inS.WriteAsync($frame, 0, $frame.Length) } catch { }
+        try { if ($wr) { [void]$wr.Wait(5000) }; $inS.Flush(); $p.StandardInput.Close() } catch { }
+    }
+    $exited = $p.WaitForExit($TimeoutMs)
+    if (-not $exited) { try { $p.Kill() } catch { }; [void]$p.WaitForExit(10000) }
+    try { [void]$copy.Wait(10000) } catch { }
+    try { $p.StandardInput.Close() } catch { }
+    $bytes = $ms.ToArray()
+    $r = [pscustomobject]@{ exited = $exited; code = $(if ($exited) { $p.ExitCode } else { -1 }); framed = $false; reply = $null; raw = ''; err = '' }
+    try { if ($errTask.Wait(5000)) { $r.err = $errTask.Result } } catch { }
+    if ($bytes.Length -ge 4) {
+        $len = [BitConverter]::ToInt32($bytes, 0)
+        $r.framed = ($len -eq $bytes.Length - 4)
+        $r.raw = [Text.Encoding]::UTF8.GetString($bytes, 4, $bytes.Length - 4)
+        try { $r.reply = $r.raw | ConvertFrom-Json } catch { }
+    }
+    return $r
+}
+function Test-HostError($r, [string[]]$titles) {
+    return ($r.exited -and $r.code -eq 0 -and $r.framed -and $r.reply -and $r.reply.level -ceq 'ERROR' -and @($r.reply.reasons).Count -eq 0 -and
+        $titles -ccontains [string]$r.reply.title)
+}
+$tBad = 'Geçersiz dosya yolu'; $tOut = 'Bu konumdaki dosyalar taranmaz'; $tMiss = 'Dosya bulunamadı'; $tReq = 'İstek okunamadı'
+$tSize = 'İstek çok büyük ya da boş'; $tOutput = 'Tarama sonucu okunamadı'; $tFailed = 'Dosya taranamadı'
+function HostWhy($r) { return "exited=$($r.exited) code=$($r.code) framed=$($r.framed) raw=$($r.raw) err=$($r.err)" }
+
+$hostSrc = Join-Path $root 'windows\browser\CortmedBrowserHost.cs'
+$hostTpl = Join-Path $root 'windows\browser\com.cortmed.security.json.template'
+$tplOk = $false
+try {
+    $tplTxt = [IO.File]::ReadAllText($hostTpl)
+    $tpl = $tplTxt | ConvertFrom-Json
+    $tplOk = ($tpl.name -eq 'com.cortmed.security' -and $tpl.type -eq 'stdio' -and $tpl.path -eq '__HOST_PATH__' -and
+        @($tpl.allowed_origins).Count -eq 1 -and $tpl.allowed_origins[0] -eq 'chrome-extension://__EXTENSION_ID__/')
+} catch { }
+Check 'kopru bildirim sablonu (com.cortmed.security.json.template)' $tplOk ''
+
+$hTmp = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-hosttest-' + [Guid]::NewGuid().ToString('N'))
+$hFileDir = Join-Path $env:TEMP 'cortmed host test ü'
+New-Item -ItemType Directory -Force $hTmp | Out-Null
+try {
+    $hExe = Join-Path $hTmp 'CortmedBrowserHost.exe'
+    $hOut = ''
+    if (Test-Path $hostSrc) {
+        $hArgs = @('/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/codepage:65001', "/out:$hExe", '/reference:System.Web.Extensions.dll', $hostSrc)
+        $hOut = & $gcsc @hArgs | Out-String
+    }
+    Check 'CortmedBrowserHost.cs derlenir (C# 5, csc v4)' ((Test-Path $hostSrc) -and ($LASTEXITCODE -eq 0) -and (Test-Path $hExe)) $hOut
+    $hostSrcTxt = if (Test-Path $hostSrc) { Get-Content $hostSrc -Raw -Encoding UTF8 } else { '' }
+    Check 'kopru PATH''e guvenmez (System32 powershell)' ($hostSrcTxt -match 'Environment\.SystemDirectory' -and $hostSrcTxt -match 'WindowsPowerShell') ''
+    Check 'kopru kayit defterine dokunmaz' ($hostSrcTxt -notmatch 'Microsoft\.Win32|Registry') ''
+
+    # Sahte tarama komutu: -Kind'a gore sabit cikti verir, aldigi -Path'i -Log dosyasina yazar
+    $stub = Join-Path $hTmp 'stub.ps1'
+    $stubTxt = @'
+param([string]$Kind, [string]$Log, [string]$Path)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+if ($Log) { [IO.File]::WriteAllText($Log, $Path, (New-Object System.Text.UTF8Encoding($false))) }
+switch ($Kind) {
+    'ok' { [Console]::Out.WriteLine('once gelen gurultu'); [Console]::Out.WriteLine('{"level":"OK","title":"t","reasons":[]}'); [Console]::Out.WriteLine('') }
+    'garbage' { [Console]::Out.WriteLine('bu bir JSON degil {') }
+    'pwned' { [Console]::Out.WriteLine('{"level":"PWNED","title":"x","reasons":["y"]}') }
+    'tr' {
+        $o = [ordered]@{ level = 'YELLOW'; title = ('Şüpheli dosya: ' + ('ç' * 300)); reasons = @('ı1', 'ğ2', 'ş3', 'ö4', 'ü5', 'İ6', 7, ('x' * 300)) }
+        [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress))
+    }
+}
+[Console]::Out.Flush()
+'@
+    [IO.File]::WriteAllText($stub, $stubTxt, (New-Object Text.UTF8Encoding($true)))
+    $psExe = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $stubLog = Join-Path $hTmp 'stub-path.txt'
+    function StubArgs([string]$data, [string]$kind) { return @('--data', $data, '--scan-cmd', $psExe, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stub, '-Kind', $kind, '-Log', $stubLog) }
+    function PathFrame([string]$p) { return (New-HostFrame (@{ path = $p } | ConvertTo-Json -Compress)) }
+
+    if (Test-Path $hExe) {
+        $d1 = Join-Path $hTmp 'data-missing'
+        $r = Invoke-BrowserHost $hExe (StubArgs $d1 'ok') (PathFrame (Join-Path $hTmp 'yok.exe'))
+        Check 'kopru: olmayan dosya -> ERROR' (Test-HostError $r $tMiss) (HostWhy $r)
+        Check 'kopru: hatali yolda da browser-lastseen.txt yazilir' (Test-Path (Join-Path $d1 'browser-lastseen.txt')) ''
+
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd2') 'ok') (PathFrame 'C:\Windows\notepad.exe')
+        Check 'kopru: profil disi (notepad.exe) -> ERROR' (Test-HostError $r $tOut) (HostWhy $r)
+
+        $up = [Environment]::GetFolderPath('UserProfile')
+        $badPaths = @(
+            (Join-Path $up '..\..\Windows\notepad.exe'),
+            ('\\?\' + (Join-Path $hTmp 'stub.ps1')),
+            ('\\.\' + (Join-Path $hTmp 'stub.ps1')),
+            '\\127.0.0.1\c$\Windows\notepad.exe',
+            'stub.ps1',
+            ($stub + ':gizli'),
+            ''
+        )
+        foreach ($bp in $badPaths) {
+            $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd3') 'ok') (PathFrame $bp)
+            Check "kopru: gecersiz yol reddedilir [$bp]" (Test-HostError $r @($tBad, $tOut)) (HostWhy $r)
+        }
+
+        $big = [byte[]][BitConverter]::GetBytes([int]70000)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd4') 'ok') $big -KeepOpen -TimeoutMs 15000
+        Check 'kopru: 70000 baytlik baslik -> ERROR ve govdeyi okumadan cikar' (Test-HostError $r $tSize) (HostWhy $r)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd4') 'ok') ([byte[]](0, 0, 0, 0)) -KeepOpen -TimeoutMs 15000
+        Check 'kopru: 0 uzunluk -> ERROR' (Test-HostError $r $tSize) (HostWhy $r)
+
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd5') 'ok') (New-HostFrame '{"path":')
+        Check 'kopru: bozuk JSON -> ERROR' (Test-HostError $r $tReq) (HostWhy $r)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd5') 'ok') (New-HostFrame '{"path":5}')
+        Check 'kopru: path metin degil -> ERROR' (Test-HostError $r $tReq) (HostWhy $r)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd5') 'ok') (New-HostFrame '{"cmd":"calc"}')
+        Check 'kopru: path yok -> ERROR' (Test-HostError $r $tReq) (HostWhy $r)
+
+        New-Item -ItemType Directory -Force $hFileDir | Out-Null
+        $qf = Join-Path $hFileDir 'a"b.exe'
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd6') 'ok') (PathFrame $qf)
+        Check 'kopru: tirnak iceren yol -> ERROR' (Test-HostError $r $tBad) (HostWhy $r)
+
+        $vf = Join-Path $hFileDir 'a b.exe'
+        [IO.File]::WriteAllBytes($vf, [byte[]](77, 90))
+        $d7 = Join-Path $hTmp 'data-ok'
+        Remove-Item $stubLog -Force -ErrorAction SilentlyContinue
+        $r = Invoke-BrowserHost $hExe (StubArgs $d7 'ok') (PathFrame $vf)
+        $want = '{"level":"OK","title":"t","reasons":[]}'
+        $got = if ($r.reply) { $r.reply | ConvertTo-Json -Compress } else { '' }
+        Check 'kopru: gecerli dosya -> sahte taramanin JSON''u aynen' ($r.exited -and $r.framed -and $r.code -eq 0 -and $got -eq $want) ("got=$got " + (HostWhy $r))
+        $seen = Join-Path $d7 'browser-lastseen.txt'
+        $seenOk = $false
+        if (Test-Path $seen) { $st = (Get-Content $seen -Raw).Trim(); $dt = [datetime]::MinValue; $seenOk = [datetime]::TryParse($st, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$dt) -and $st -match 'Z$' -and ([datetime]::UtcNow - $dt).TotalMinutes -lt 10 }
+        Check 'kopru: browser-lastseen.txt yazildi (ISO UTC)' $seenOk ''
+        $logged = if (Test-Path $stubLog) { [IO.File]::ReadAllText($stubLog, [Text.Encoding]::UTF8) } else { '' }
+        Check 'kopru: tarama komutuna yol bozulmadan gecer (bosluk, u-umlaut)' ($logged -eq $vf) "log=$logged"
+
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd8') 'garbage') (PathFrame $vf)
+        Check 'kopru: anlamsiz tarama ciktisi -> ERROR' (Test-HostError $r $tOutput) (HostWhy $r)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd8') 'pwned') (PathFrame $vf)
+        Check 'kopru: level PWNED -> ERROR' (Test-HostError $r $tFailed) (HostWhy $r)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd8') 'tr') (PathFrame $vf)
+        $trOk = $r.framed -and $r.reply -and $r.reply.level -eq 'YELLOW' -and ([string]$r.reply.title).StartsWith('Şüpheli dosya: ç') -and
+            ([string]$r.reply.title).Length -eq 200 -and @($r.reply.reasons).Count -eq 5 -and (@($r.reply.reasons) -join ',') -ceq 'ı1,ğ2,ş3,ö4,ü5'
+        Check 'kopru: Turkce karakterler korunur, baslik 200, en fazla 5 neden' $trOk (HostWhy $r)
+    }
+
+    # CortmedSecurity.ps1 -Mode ScanFile -Json: gecici bir kopyada, bos bir CMDB ile, gecici bir .txt uzerinde
+    $sw = Join-Path $hTmp 'scanwork'
+    New-Item -ItemType Directory -Force $sw | Out-Null
+    foreach ($f in 'CortmedSecurity.ps1', 'CortmedEngine.cs') { Copy-Item (Join-Path $root "windows\$f") $sw }
+    $cmdb = New-Object IO.MemoryStream
+    $bw = New-Object IO.BinaryWriter $cmdb
+    $bw.Write([Text.Encoding]::ASCII.GetBytes('CMDB')); $bw.Write([uint16]1); $bw.Write([uint16]0); $bw.Write([long]1)
+    $bw.Write([int]0); $bw.Write([int]0); $bw.Write([int]0); $bw.Flush()
+    [IO.File]::WriteAllBytes((Join-Path $sw 'windows.cmdb'), $cmdb.ToArray())
+    $txt = Join-Path $hTmp 'ornek belge.txt'
+    [IO.File]::WriteAllText($txt, 'merhaba')
+    $prevEnc = [Console]::OutputEncoding
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $jOut = @(& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $sw 'CortmedSecurity.ps1') -Mode ScanFile -Json -Path $txt 2>$null | ForEach-Object { "$_" })
+    $jCode = $LASTEXITCODE
+    [Console]::OutputEncoding = $prevEnc
+    $jLines = @($jOut | Where-Object { $_.Trim() })
+    $jObj = $null
+    if ($jLines.Count -eq 1) { try { $jObj = $jLines[0] | ConvertFrom-Json } catch { } }
+    Check 'ScanFile -Json tek gecerli JSON satiri, level RED/YELLOW/OK' ($jCode -eq 0 -and $jObj -and @('RED', 'YELLOW', 'OK') -ccontains $jObj.level -and [string]$jObj.title -and @($jObj.reasons).Count -le 5) ("kod $jCode, cikti: " + ($jOut -join ' / '))
+} finally {
+    Remove-Item -LiteralPath $hTmp -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $hFileDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # --- Eklenti ozel anahtari depoya girmemeli ---
 $pemTracked = @(& git -C $root ls-files -- '*.pem' 'android/keystore' 2>$null)
 Check 'eklenti ozel anahtari depoda izlenmiyor' ($pemTracked.Count -eq 0) ($pemTracked -join ', ')
