@@ -4,8 +4,8 @@
   'use strict';
   if (window.top !== window) return;
   if (location.protocol !== 'https:' && location.protocol !== 'http:') return;
-  if (window.__cortmedContentLoaded) return;
-  window.__cortmedContentLoaded = true;
+  // document_start'ta calisir: dinleyiciler yalnizca window'a, sayfa betiklerinden once kurulur.
+  // Kart ve MFA isleri DOM hazir olunca yapilir.
 
   const PW = 'input[type="password"]';
   const CONTROL = 'button, input[type="submit"], input[type="button"], input[type="image"], [role="button"]';
@@ -143,6 +143,10 @@
 
   function showResult(r) {
     if (!r || typeof r !== 'object') return;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { showResult(r); }, { once: true });
+      return;
+    }
     const leaked = Number(r.leaked) || 0;
     const reuse = Array.isArray(r.reuse) ? r.reuse.map(String) : [];
     if (leaked > 0) showLeaked(leaked);
@@ -178,7 +182,7 @@
   }
   function trusted(e) { return !!(e && e.isTrusted) || testTrust(); }
 
-  // Her sifre alaninin son GUVENILIR input/change/paste olayindaki degeri.
+  // Her sifre alaninin son GUVENILIR input olayindaki degeri (yapistirma ve otomatik doldurma da input uretir).
   const userValues = new WeakMap();
   const TRUST_RECENT_MS = 60000;
   function remember(field) {
@@ -196,8 +200,7 @@
     if (!trusted(e)) return;
     const t = origin(e);
     if (!t || !t.matches(PW)) return;
-    if (e.type === 'paste') setTimeout(function () { remember(t); }, 0);
-    else remember(t);
+    remember(t);
   }
 
   let last = null, lastTimer = 0;
@@ -219,7 +222,11 @@
   }
 
   // ---------- Hangi dugme giris sayilir ----------
-  const LOGIN_RX = /giri[sş]|oturum|log ?in|sign ?in|devam|next|continue|g[öo]nder|kaydet|de[gğ]i[sş]tir|onayla|submit/;
+  // "gir" ve "ileri" yalnizca tam kelime (Turkce harfler dahil sinir): "girdi", "bilgileri" eslesmez.
+  const WB_L = '(?<![a-zçğıöşüâîû0-9])', WB_R = '(?![a-zçğıöşüâîû0-9])';
+  const LOGIN_RX = new RegExp('giri[sş]|oturum|log ?in|sign ?in|devam|next|continue|g[öo]nder|kaydet|de[gğ]i[sş]tir|onayla|submit' +
+    '|sonraki|g[üu]ncelle|update|save|change|do[gğ]rula|verify' +
+    '|' + WB_L + '(?:gir|ileri)' + WB_R);
   const TOGGLE_RX = /g[öo]ster|gizle|show|hide|eye|g[öo]z/;
 
   function lowerBoth(s) {
@@ -250,8 +257,6 @@
   }
 
   window.addEventListener('input', onValue, true);
-  window.addEventListener('change', onValue, true);
-  window.addEventListener('paste', onValue, true);
 
   window.addEventListener('submit', function (e) {
     const f = filledIn(e.target);
@@ -280,7 +285,14 @@
     if (f) attempt(f);
   }, true);
 
-  // ---------- MFA karti (sayfa basina en fazla bir kez) ----------
+  // ---------- DOM hazir olunca: MFA karti ve bekleyen kartlar ----------
+  function whenReady(fn) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn, { once: true });
+    else fn();
+  }
+
+  whenReady(function () {
+  // MFA karti (sayfa basina en fazla bir kez)
   let mfaShown = false;
   send({ type: 'mfaCheck', site: location.hostname }, function (r) {
     if (mfaShown || !r || !r.show || typeof r.name !== 'string') return;
@@ -297,4 +309,5 @@
 
   // Onceki sayfa gonderimden hemen sonra kapandiysa kartlar burada gosterilir.
   send({ type: 'pendingCards' }, showResult);
+  });
 })();

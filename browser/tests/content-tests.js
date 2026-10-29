@@ -148,15 +148,37 @@
     type(pw, fresh());
     $('upBtn').click();
     assertEq('ACC aria-label "GİRİŞ"', pwCount(), 6);
+    type(pw, fresh());
+    $('girdiBtn').click();
+    assertEq('REJ "girdileri" (gir only as whole word)', pwCount(), 6);
+    $('nextBtn').click();
+    assertEq('ACC "İleri"', pwCount(), 7);
+    type(pw, fresh());
+    $('sonrakiBtn').click();
+    assertEq('ACC "Sonraki"', pwCount(), 8);
+    type(pw, fresh());
+    $('girBtn').click();
+    assertEq('ACC "Gir"', pwCount(), 9);
+
+    // Yalnizca input olayi kaydeder: change ve paste kaydetmez
+    pw.value = 'Degisim-1';
+    pw.dispatchEvent(new Event('change', { bubbles: true }));
+    loginBtn.click();
+    assertEq('NEG change event does not record', pwCount(), 9);
+    pw.value = 'Yapistir-1';
+    pw.dispatchEvent(new Event('paste', { bubbles: true }));
+    await tick();
+    loginBtn.click();
+    assertEq('NEG paste event does not record', pwCount(), 9);
 
     // 6) Klasik form: gercek gonder dugmesi (metni "Tamam") tiklama + submit tek
     type(pw2, 'Form-Parola-1');
     $('formBtn').click();
-    assertEq('form submit button click+submit one', pwCount(), 7);
+    assertEq('form submit button click+submit one', pwCount(), 10);
     type(pw2, 'Form-Parola-2');
     enter(pw2);
     pw2.form.requestSubmit();
-    assertEq('form enter+submit one', pwCount(), 8);
+    assertEq('form enter+submit one', pwCount(), 11);
     const last = window.__sent.filter(function (m) { return m.type === 'pwSubmit'; }).pop() || {};
     assertEq('form value sent', last.password, 'Form-Parola-2');
 
@@ -166,7 +188,7 @@
     loginBtn.click();
     window.__fakeNow += 2500;
     loginBtn.click();
-    assertEq('same value after 2s counts', pwCount(), 10);
+    assertEq('same value after 2s counts', pwCount(), 13);
     window.__fakeNow = null;
     await tick(); await tick();
 
@@ -180,7 +202,7 @@
     const mute = window.__sent.filter(function (m) { return m.type === 'reuseMute'; });
     assertEq('mute sent', mute.length, 1);
     assertEq('mute never carries password', JSON.stringify(mute).indexOf('Parola'), -1);
-    assertEq('card clicks never send pwSubmit', pwCount(), 10);
+    assertEq('card clicks never send pwSubmit', pwCount(), 13);
     const leakCard = cards('leak')[0];
     if (leakCard) leakCard.querySelector('[data-act="close"]').click();
     assertEq('tamam closes', cards('leak').length, 0);
@@ -195,6 +217,7 @@
 
     // Sayfa dunyasindan kapi yalnizca 127.0.0.1'de anlam tasir (ayni betik, kosul kodda)
     assertEq('fixture served from 127.0.0.1', location.hostname, '127.0.0.1');
+    assertEq('content.js loaded before body existed', window.__bodyAtStart, false);
   } catch (e) {
     fails.push('exception: ' + e.message);
   }

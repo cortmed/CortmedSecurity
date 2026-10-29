@@ -319,6 +319,25 @@ async function backgroundLogic(L, assertEq) {
   assertEq('cache capped 300', ck.length, 300);
   assertEq('cache evicts oldest', [ck.indexOf('f299') < 0, ck.indexOf('f0') >= 0], [true, true]);
 
+  // Genel sinir: 24 saatte en fazla 30 farkli iz (tum siteler); fazlasi sessiz
+  st = fakeStore(); ff = fakeFetch(miss);
+  let capNow = T;
+  const cd = { store: st, fetch: ff, now: function () { return capNow; } };
+  for (let i = 0; i < 30; i++) {
+    await L.handlePwSubmit({ site: 's' + i + '.com', password: 'Sinir-' + i }, cd);
+  }
+  assertEq('fp cap 30 fetched', ff.calls.length, 30);
+  const capIdx = JSON.stringify(st.data.pwIndex);
+  r = await L.handlePwSubmit({ site: 'yeni.com', password: 'Sinir-31' }, cd);
+  assertEq('fp cap 31st silent', [r, ff.calls.length, JSON.stringify(st.data.pwIndex)], [{ reuse: [], leaked: 0 }, 30, capIdx]);
+  r = await L.handlePwSubmit({ site: 'baska.com', password: 'Sinir-0' }, cd);
+  assertEq('fp cap known fp still works', r.reuse, ['s0.com']);
+  assertEq('fp cap stored locally', Object.keys(st.data.fpSeen || {}).length, 30);
+  capNow = T + 24 * 3600 * 1000 + 1;
+  r = await L.handlePwSubmit({ site: 'yeni.com', password: 'Sinir-31' }, cd);
+  assertEq('fp cap window rolls', ff.calls.length, 31);
+  assertEq('fp cap pruned', Object.keys(st.data.fpSeen).length, 1);
+
   await routerTests(L, assertEq, sites, miss, PWSFX);
 }
 
@@ -425,7 +444,8 @@ async function extensionFiles(L, assertEq) {
   assertEq('manifest sw', m.background && m.background.service_worker, 'background.js');
   const cs = (m.content_scripts || [])[0] || {};
   assertEq('manifest cs', [cs.matches, cs.js, cs.run_at, cs.all_frames, (m.content_scripts || []).length],
-    [['<all_urls>'], ['content.js'], 'document_idle', false, 1]);
+    [['<all_urls>'], ['content.js'], 'document_start', false, 1]);
+  assertEq('manifest cs isolated world', cs.world === undefined || cs.world === 'ISOLATED', true);
   assertEq('manifest popup', m.action && m.action.default_popup, 'popup.html');
   assertEq('manifest icons', m.icons, { '16': 'icons/16.png', '48': 'icons/48.png', '128': 'icons/128.png' });
   assertEq('manifest min chrome', m.minimum_chrome_version, '110');

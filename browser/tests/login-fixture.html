@@ -1,6 +1,14 @@
 <!doctype html>
+<html>
+<head>
 <meta charset="utf-8">
 <title>Cortmed content script fixture</title>
+<!-- document_start benzetimi: icerik betigi body yokken, sayfa betiklerinden once yuklenir -->
+<script src="content-stub.js"></script>
+<script>window.__bodyAtStart = !!document.body;</script>
+<script src="../extension/content.js"></script>
+</head>
+<body>
 <div id="result">RUNNING</div>
 
 <!-- Yalnizca JS ile calisan giris: form yok, dugme tiklaninca sayfa kendi isini yapar -->
@@ -15,7 +23,11 @@
   <div class="actions">
     <button id="loginBtn" type="button">Giriş yap</button>
     <button id="helpBtn" type="button">Yardım</button>
+    <button id="girdiBtn" type="button">Bilgi girdileri</button>
     <button id="signBtn" type="button">Sign in</button>
+    <button id="nextBtn" type="button">İleri</button>
+    <button id="sonrakiBtn" type="button">Sonraki</button>
+    <button id="girBtn" type="button">Gir</button>
     <div id="roleBtn" role="button" tabindex="0">Oturum aç</div>
     <span id="upBtn" role="button" tabindex="0" aria-label="GİRİŞ"></span>
   </div>
@@ -35,6 +47,6 @@
   document.getElementById('loginBtn').addEventListener('click', function () { /* sayfanin kendi fetch girisi */ });
   document.getElementById('realForm').addEventListener('submit', function (e) { e.preventDefault(); });
 </script>
-<script src="content-stub.js"></script>
-<script src="../extension/content.js"></script>
 <script src="content-tests.js"></script>
+</body>
+</html>

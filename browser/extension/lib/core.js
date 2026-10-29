@@ -96,6 +96,24 @@
   const RATE_MAX = 5;
   const RATE_WINDOW = 10 * 60 * 1000;
   const PENDING_MS = 60000;
+  const FP_CAP = 30;            // 24 saatte en fazla 30 farkli iz (tum siteler)
+  const FP_WINDOW = DAY;
+
+  // Kayan 24 saatlik pencerede farkli iz sayisi; yeniden yuklemelerde kalsin diye local depoda, zaman damgasiyla.
+  async function fpAllow(deps, fp) {
+    const now = deps.now();
+    const st = await deps.store.get(['fpSeen']);
+    const old = st.fpSeen || {};
+    const seen = {};
+    Object.keys(old).forEach(function (k) {
+      if (typeof old[k] === 'number' && now >= old[k] && now - old[k] < FP_WINDOW) seen[k] = old[k];
+    });
+    const known = Object.prototype.hasOwnProperty.call(seen, fp);
+    const ok = known || Object.keys(seen).length < FP_CAP;
+    if (ok && !known) seen[fp] = now;
+    await deps.store.set({ fpSeen: seen });
+    return ok;
+  }
 
   function direct(fn) { return fn(); }
 
@@ -157,6 +175,7 @@
     const sha = await sha1Hex(password);
     password = null;
     const prefix = sha.slice(0, 5), suffix = sha.slice(5);
+    if (!(await run(function () { return fpAllow(deps, fp); }))) return empty;
 
     const cached = ((await deps.store.get(['hibpCache'])).hibpCache || {})[fp];
     let fresh = null;
