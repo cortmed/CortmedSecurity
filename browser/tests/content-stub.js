@@ -1,6 +1,8 @@
 // content.js icin sahte chrome API ve gozlem kancalari (yalnizca test sayfasinda).
 (function () {
   'use strict';
+  // Test kapisi: sentetik olaylari "kullanicidan" sayar. Yalnizca bu sayfanin dunyasinda ve 127.0.0.1'de etkili.
+  window.__cortmedTestTrust = true;
   window.__sent = [];
   window.__replies = {
     mfaCheck: { show: true, id: 'discord', name: 'Discord', url: 'https://support.discord.com/x' },

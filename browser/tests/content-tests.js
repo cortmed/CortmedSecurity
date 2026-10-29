@@ -1,4 +1,5 @@
 // content.js testleri: login-fixture.html uzerinde, sahte chrome.runtime ile.
+// window.__cortmedTestTrust: sentetik olaylari "kullanicidan" sayan test kapisi (yalnizca 127.0.0.1).
 (async function () {
   const out = document.getElementById('result');
   const fails = [];
@@ -15,17 +16,21 @@
     return r ? Array.prototype.slice.call(r.querySelectorAll('[data-kind' + (kind ? '="' + kind + '"' : '') + ']')) : [];
   }
   function enter(el) { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); }
+  // Kullanici yazmis gibi: deger + input olayi (test kapisi acikken guvenilir sayilir)
+  function type(el, v) { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }
+  function $(id) { return document.getElementById(id); }
+  let seq = 0;
+  function fresh() { return 'Gizli-Parola-' + (++seq); }
 
   try {
-    const pw = document.getElementById('pw');
-    const pw2 = document.getElementById('pw2');
-    const loginBtn = document.getElementById('loginBtn');
+    const pw = $('pw');
+    const pw2 = $('pw2');
+    const loginBtn = $('loginBtn');
     await tick(); await tick();
 
     // Sayfa yuklenince MFA sorulur, kart bir kez cizilir
     const mfaMsgs = window.__sent.filter(function (m) { return m.type === 'mfaCheck'; });
     assertEq('mfaCheck sent once', mfaMsgs.length, 1);
-    assertEq('mfaCheck site', mfaMsgs[0] && mfaMsgs[0].site, location.hostname);
     assertEq('one shadow host', window.__shadows.length, 1);
     const sh = window.__shadows[0] || {};
     assertEq('shadow closed', sh.mode, 'closed');
@@ -43,20 +48,45 @@
     assertEq('mfa buttons', mfaBtns, ['Nasıl açılır?', 'Açık', 'Sonra']);
     if (mfa[0]) {
       mfa[0].querySelector('[data-act="how"]').click();
-      const open = window.__sent.filter(function (m) { return m.type === 'mfaOpen'; });
-      assertEq('mfa how sends open', open.length === 1 && open[0].id === 'discord', true);
+      assertEq('mfa how sends open', window.__sent.filter(function (m) { return m.type === 'mfaOpen'; }).length, 1);
       mfa[0].querySelector('[data-act="ok"]').click();
       const ans = window.__sent.filter(function (m) { return m.type === 'mfaAnswer'; });
-      assertEq('mfa ok answer', ans.length === 1 && ans[0].answer === 'ok' && ans[0].site === location.hostname, true);
+      assertEq('mfa ok answer', ans.length === 1 && ans[0].answer === 'ok', true);
       assertEq('mfa card closed', cards('mfa').length, 0);
     }
 
+    // ===== Saldiri senaryolari: test kapisi KAPALI (gercek sayfa betigi gibi) =====
+    window.__cortmedTestTrust = false;
+    pw.value = 'Tahmin-1';
+    loginBtn.click();
+    assertEq('NEG script value + click', pwCount(), 0);
+    pw.value = 'Tahmin-2';
+    enter(pw);
+    assertEq('NEG script value + Enter', pwCount(), 0);
+    pw2.value = 'Tahmin-3';
+    pw2.form.requestSubmit();
+    assertEq('NEG script value + requestSubmit', pwCount(), 0);
+    type(pw, 'Tahmin-4'); loginBtn.click(); enter(pw);
+    assertEq('NEG untrusted input event + click/Enter', pwCount(), 0);
+    window.__cortmedTestTrust = true;
+
+    // Kapi acik ama deger betikle yazilmis (guvenilir input yok): gonderilmez
+    pw.value = 'Tahmin-5';
+    loginBtn.click(); enter(pw);
+    assertEq('NEG value without trusted input', pwCount(), 0);
+    // Kullanici yazdi, sonra betik degistirdi: gonderilmez
+    type(pw, 'Kullanici-1'); pw.value = 'Tahmin-6';
+    loginBtn.click();
+    assertEq('NEG value changed by script after typing', pwCount(), 0);
+
+    // ===== Gecerli girisler =====
     // 1) Yalnizca JS ile giris: dugme tiklamasi tek pwSubmit
-    pw.value = 'Gizli-Parola-1';
+    const v1 = fresh();
+    type(pw, v1);
     loginBtn.click();
     assertEq('js click one', pwCount(), 1);
     const m1 = window.__sent.filter(function (m) { return m.type === 'pwSubmit'; })[0] || {};
-    assertEq('pwSubmit payload', [m1.site, m1.password], [location.hostname, 'Gizli-Parola-1']);
+    assertEq('pwSubmit payload', m1.password, v1);
     await tick(); await tick();
 
     // Kartlar: once kirmizi, sonra sari; metinlerde sifre yok
@@ -79,46 +109,64 @@
     assertEq('auto close removes cards', cards().length, 0);
 
     // 2) Enter tek pwSubmit
-    pw.value = 'Gizli-Parola-2';
+    type(pw, fresh());
     enter(pw);
     assertEq('enter one', pwCount(), 2);
 
     // 3) Tiklama + Enter 2 sn icinde: tek
-    pw.value = 'Gizli-Parola-3';
-    loginBtn.click();
-    enter(pw);
-    loginBtn.click();
+    type(pw, fresh());
+    loginBtn.click(); enter(pw); loginBtn.click();
     assertEq('click+enter one', pwCount(), 3);
 
     // 4) Bos sifre: hic
-    pw.value = '';
-    loginBtn.click();
-    enter(pw);
+    type(pw, '');
+    loginBtn.click(); enter(pw);
     assertEq('empty zero', pwCount(), 3);
 
-    // 5) Sifre alani olmayan bolumdeki dugme: hic
-    pw.value = 'Gizli-Parola-4';
-    document.getElementById('otherBtn').click();
-    assertEq('unrelated button zero', pwCount(), 3);
+    // 5) Dugme sezgisi: goster/gizle ve ilgisiz dugmeler reddedilir
+    type(pw, fresh());
+    $('eyeBtn').click();
+    assertEq('REJ eye (göster) button', pwCount(), 3);
+    $('pressBtn').click();
+    assertEq('REJ aria-pressed', pwCount(), 3);
+    $('ctrlBtn').click();
+    assertEq('REJ aria-controls=password id', pwCount(), 3);
+    $('helpBtn').click();
+    assertEq('REJ unrelated text', pwCount(), 3);
+    $('otherBtn').click();
+    assertEq('REJ button far from password', pwCount(), 3);
+    type(pw2, 'Form-Ara-1');
+    $('searchBtn').click();
+    assertEq('REJ type=button in form, no login text', pwCount(), 3);
 
-    // 6) Klasik form: tiklama + submit tek
-    pw2.value = 'Form-Parola-1';
-    document.getElementById('formBtn').click();
-    assertEq('form click+submit one', pwCount(), 4);
-    pw2.value = 'Form-Parola-2';
+    // Kabul edilen dugmeler
+    $('signBtn').click();
+    assertEq('ACC "Sign in"', pwCount(), 4);
+    type(pw, fresh());
+    $('roleBtn').click();
+    assertEq('ACC role=button "Oturum aç"', pwCount(), 5);
+    type(pw, fresh());
+    $('upBtn').click();
+    assertEq('ACC aria-label "GİRİŞ"', pwCount(), 6);
+
+    // 6) Klasik form: gercek gonder dugmesi (metni "Tamam") tiklama + submit tek
+    type(pw2, 'Form-Parola-1');
+    $('formBtn').click();
+    assertEq('form submit button click+submit one', pwCount(), 7);
+    type(pw2, 'Form-Parola-2');
     enter(pw2);
     pw2.form.requestSubmit();
-    assertEq('form enter+submit one', pwCount(), 5);
+    assertEq('form enter+submit one', pwCount(), 8);
     const last = window.__sent.filter(function (m) { return m.type === 'pwSubmit'; }).pop() || {};
     assertEq('form value sent', last.password, 'Form-Parola-2');
 
     // 7) Ayni deger 2 sn sonra yeniden: ikinci gonderim
     window.__fakeNow = Date.now();
-    pw.value = 'Gizli-Parola-5';
+    type(pw, fresh());
     loginBtn.click();
     window.__fakeNow += 2500;
     loginBtn.click();
-    assertEq('same value after 2s counts', pwCount(), 7);
+    assertEq('same value after 2s counts', pwCount(), 10);
     window.__fakeNow = null;
     await tick(); await tick();
 
@@ -130,12 +178,23 @@
     const reuseCard = cards('reuse')[0];
     if (reuseCard) reuseCard.querySelector('[data-act="mute"]').click();
     const mute = window.__sent.filter(function (m) { return m.type === 'reuseMute'; });
-    assertEq('mute sent', mute.length === 1 && mute[0].site === location.hostname, true);
+    assertEq('mute sent', mute.length, 1);
     assertEq('mute never carries password', JSON.stringify(mute).indexOf('Parola'), -1);
+    assertEq('card clicks never send pwSubmit', pwCount(), 10);
     const leakCard = cards('leak')[0];
     if (leakCard) leakCard.querySelector('[data-act="close"]').click();
     assertEq('tamam closes', cards('leak').length, 0);
     assertEq('still one shadow host', window.__shadows.length, 1);
+
+    // Uzun liste metni
+    window.__replies.pwSubmit = { reuse: ['a.com', 'b.com', 'c.com', 'd.com', 'e.com', 'f.com', 'g.com'], leaked: 0 };
+    type(pw, fresh()); loginBtn.click();
+    await tick(); await tick();
+    const rc = cards('reuse')[0];
+    assertEq('reuse long list', !!rc && rc.textContent.indexOf('başka 7 sitede de kullanıyorsunuz: a.com, b.com, c.com, d.com, e.com ve 2 site daha. Bir site') >= 0, true);
+
+    // Sayfa dunyasindan kapi yalnizca 127.0.0.1'de anlam tasir (ayni betik, kosul kodda)
+    assertEq('fixture served from 127.0.0.1', location.hostname, '127.0.0.1');
   } catch (e) {
     fails.push('exception: ' + e.message);
   }

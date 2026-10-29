@@ -131,7 +131,7 @@
   }
 
   function showReuse(sites) {
-    const shown = sites.slice(0, 5).join(', ') + (sites.length > 5 ? ', …' : '');
+    const shown = sites.slice(0, 5).join(', ') + (sites.length > 5 ? ' ve ' + (sites.length - 5) + ' site daha' : '');
     showCard('reuse', [
       'Bu şifreyi başka ', { b: String(sites.length) }, ' sitede de kullanıyorsunuz: ' + shown +
       '. Bir site sızarsa hepsi tehlikeye girer. Bu site için farklı bir şifre seçin.'
@@ -170,10 +170,40 @@
     return null;
   }
 
+  // ---------- Guven: yalnizca kullanicidan gelen olay ve deger ----------
+  // Test kapisi: yalnizca test sayfasinin kendi dunyasinda tanimlanan bir degisken ve 127.0.0.1 uzerinde.
+  // Gercek eklentide icerik betigi yalitilmis dunyada calisir; sayfanin tanimladigi degiskenleri goremez.
+  function testTrust() {
+    return self.__cortmedTestTrust === true && location.protocol === 'http:' && location.hostname === '127.0.0.1';
+  }
+  function trusted(e) { return !!(e && e.isTrusted) || testTrust(); }
+
+  // Her sifre alaninin son GUVENILIR input/change/paste olayindaki degeri.
+  const userValues = new WeakMap();
+  const TRUST_RECENT_MS = 60000;
+  function remember(field) {
+    if (field && field.value) userValues.set(field, { value: field.value, t: Date.now() });
+  }
+  function userTyped(field) {
+    const v = userValues.get(field);
+    return !!v && !!field.value && v.value === field.value;
+  }
+  function recentlyTyped(field) {
+    const v = userValues.get(field);
+    return !!v && Date.now() - v.t < TRUST_RECENT_MS;
+  }
+  function onValue(e) {
+    if (!trusted(e)) return;
+    const t = origin(e);
+    if (!t || !t.matches(PW)) return;
+    if (e.type === 'paste') setTimeout(function () { remember(t); }, 0);
+    else remember(t);
+  }
+
   let last = null, lastTimer = 0;
   function attempt(field) {
     const value = field && field.value;
-    if (!value) return;
+    if (!value || !userTyped(field)) return;
     const t = Date.now();
     if (last && last.field === field && last.value === value && t - last.t < DEDUPE_MS) return;
     last = { field: field, value: value, t: t };
@@ -188,22 +218,62 @@
     return t instanceof Element ? t : null;
   }
 
-  document.addEventListener('submit', function (e) {
+  // ---------- Hangi dugme giris sayilir ----------
+  const LOGIN_RX = /giri[sş]|oturum|log ?in|sign ?in|devam|next|continue|g[öo]nder|kaydet|de[gğ]i[sş]tir|onayla|submit/;
+  const TOGGLE_RX = /g[öo]ster|gizle|show|hide|eye|g[öo]z/;
+
+  function lowerBoth(s) {
+    s = String(s || '').slice(0, 200);
+    return [s.toLowerCase(), s.toLocaleLowerCase('tr-TR')];
+  }
+  function anyMatch(rx, parts) {
+    for (let i = 0; i < parts.length; i++) {
+      const v = lowerBoth(parts[i]);
+      if (rx.test(v[0]) || rx.test(v[1])) return true;
+    }
+    return false;
+  }
+  function isRealSubmit(ctl) {
+    if (!ctl.form) return false;
+    if (ctl.tagName === 'BUTTON') return ctl.type === 'submit';
+    return ctl.tagName === 'INPUT' && (ctl.type === 'submit' || ctl.type === 'image');
+  }
+  function isToggle(ctl, field) {
+    if (ctl.hasAttribute('aria-pressed')) return true;
+    if (field.id && ctl.getAttribute('aria-controls') === field.id) return true;
+    return anyMatch(TOGGLE_RX, [ctl.textContent, ctl.getAttribute('aria-label'), ctl.getAttribute('title')]);
+  }
+  function isLoginControl(ctl, field) {
+    if (isToggle(ctl, field)) return false;
+    if (isRealSubmit(ctl)) return true;
+    return anyMatch(LOGIN_RX, [ctl.textContent, ctl.getAttribute('aria-label'), ctl.value, ctl.getAttribute('title')]);
+  }
+
+  window.addEventListener('input', onValue, true);
+  window.addEventListener('change', onValue, true);
+  window.addEventListener('paste', onValue, true);
+
+  window.addEventListener('submit', function (e) {
     const f = filledIn(e.target);
-    if (f) attempt(f);
+    if (!f) return;
+    // requestSubmit() de guvenilir submit uretir; kullanici etkinligi aranir.
+    const ua = navigator.userActivation;
+    const active = testTrust() || (ua ? ua.isActive : recentlyTyped(f));
+    if (active) attempt(f);
   }, true);
 
-  document.addEventListener('click', function (e) {
+  window.addEventListener('click', function (e) {
+    if (!trusted(e)) return;
     const t = origin(e);
     if (!t || (host && (t === host || host.contains(t)))) return;
     const ctl = t.closest(CONTROL);
     if (!ctl || ctl.matches(PW)) return;
     const f = fieldForControl(ctl);
-    if (f) attempt(f);
+    if (f && isLoginControl(ctl, f)) attempt(f);
   }, true);
 
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter' || e.isComposing) return;
+  window.addEventListener('keydown', function (e) {
+    if (!trusted(e) || e.key !== 'Enter' || e.isComposing) return;
     const t = origin(e);
     if (!t || !t.matches(PW)) return;
     const f = filledIn(t.form) || (t.value ? t : null);

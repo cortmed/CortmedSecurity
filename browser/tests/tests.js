@@ -248,6 +248,15 @@ async function backgroundLogic(L, assertEq) {
   st = fakeStore(); now = T;
   await L.handleMfaCheck({ site: 'discord.com' }, { store: st, sites: sites, now: function () { return now; } });
   assertEq('mfa label shown unanswered', L.mfaLabel(st.data.mfa.discord, now), 'unknown');
+  // Cevapsiz kart "Sonra" gibi: 1 gun ve 6 gun sonra sessiz, 7 gun sonra yeniden
+  const mu = { store: st, sites: sites, now: function () { return now; } };
+  now = T + 1 * DAY + 1;
+  assertEq('mfa unanswered quiet 1d', (await L.handleMfaCheck({ site: 'discord.com' }, mu)).show, false);
+  now = T + 6 * DAY;
+  assertEq('mfa unanswered quiet 6d', (await L.handleMfaCheck({ site: 'discord.com' }, mu)).show, false);
+  now = T + 7 * DAY + 1;
+  assertEq('mfa unanswered asks 7d', (await L.handleMfaCheck({ site: 'discord.com' }, mu)).show, true);
+  now = T;
   assertEq('mfa label none', L.mfaLabel(undefined, now), 'unknown');
   assertEq('mfa label later expired', L.mfaLabel({ status: 'later', until: now - 1 }, now), 'unknown');
 
@@ -263,6 +272,140 @@ async function backgroundLogic(L, assertEq) {
   assertEq('dl error', L.downloadNotice(p, { level: 'ERROR', reasons: [] }), null);
   assertEq('dl garbage', L.downloadNotice(p, null), null);
   assertEq('dl unknown level', L.downloadNotice(p, { level: 'PURPLE' }), null);
+
+  // Dosya adi: yon/denetim karakterleri atilir, 60 karaktere kirpilir, uzanti gorunur
+  const spoof = 'C:\\d\\fatura\u202Efdp.exe';
+  assertEq('dl strips bidi', L.downloadNotice(spoof, { level: 'OK' }).title, '✓ faturafdp.exe temiz görünüyor');
+  assertEq('dl strips controls', L.downloadNotice('a\u0007b\u200E\u2066c.zip', { level: 'OK' }).title, '✓ abc.zip temiz görünüyor');
+  const longName = 'x'.repeat(100) + '.exe';
+  const lt = L.downloadNotice(longName, { level: 'RED', reasons: [] }).title;
+  const shownName = lt.slice(2, lt.indexOf(' tehlikeli'));
+  assertEq('dl name capped 60', [shownName.length, /\.exe$/.test(shownName), shownName.indexOf('…') > 0], [60, true, true]);
+
+  // Kopru sonucu: yalnizca lastError "kurulu degil" der; ERROR/bos cevap gorunur bir sey yapmaz
+  assertEq('outcome lastError', L.downloadOutcome({ message: 'Specified native messaging host not found.' }, undefined, p), { hostMissing: true, notice: null });
+  assertEq('outcome ERROR silent', L.downloadOutcome(undefined, { level: 'ERROR', reasons: ['x'] }, p), { notice: null });
+  assertEq('outcome empty silent', L.downloadOutcome(undefined, undefined, p), { notice: null });
+  assertEq('outcome non-object silent', L.downloadOutcome(undefined, 'OK', p), { notice: null });
+  const okOut = L.downloadOutcome(undefined, { level: 'OK', reasons: [] }, p);
+  assertEq('outcome ok', [okOut.hostMissing, okOut.notice && okOut.notice.title], [false, '✓ kurulum.exe temiz görünüyor']);
+
+  // HIBP: zaman asimi sinyali, iptal hatasi sessiz, sorgu ve ozet depo sirasinin DISINDA
+  st = fakeStore(); ff = fakeFetch(miss);
+  let sig = null;
+  const sigFetch = async function (url, init) { sig = init && init.signal; return { ok: true, text: async function () { return miss; } }; };
+  await L.handlePwSubmit({ site: 'a.com', password: 'zaman-1' }, { store: st, fetch: sigFetch, now: function () { return T; } });
+  assertEq('hibp has abort signal', typeof AbortSignal !== 'undefined' && sig instanceof AbortSignal && !sig.aborted, true);
+  const abortFetch = async function () { throw new DOMException('The operation was aborted.', 'TimeoutError'); };
+  r = await L.handlePwSubmit({ site: 'a.com', password: 'password' }, { store: fakeStore(), fetch: abortFetch, now: function () { return T; } });
+  assertEq('hibp timeout silent', r.leaked, 0);
+
+  let inside = false, fetchInside = null, serialCalls = 0;
+  const probeSerial = async function (fn) {
+    serialCalls++;
+    inside = true;
+    try { return await fn(); } finally { inside = false; }
+  };
+  const probeFetch = async function () { fetchInside = inside; return { ok: true, text: async function () { return miss; } }; };
+  await L.handlePwSubmit({ site: 'a.com', password: 'sira-1' }, { store: fakeStore(), fetch: probeFetch, now: function () { return T; }, serial: probeSerial });
+  assertEq('hibp fetch outside serial', [fetchInside, serialCalls >= 1], [false, true]);
+
+  // hibpCache en fazla 300 kayit; en eskiler atilir
+  const big = {};
+  for (let i = 0; i < 300; i++) big['f' + i] = { n: 0, t: T - 1000 - i };
+  st = fakeStore({ hibpCache: big });
+  await L.handlePwSubmit({ site: 'a.com', password: 'yeni-kayit' }, { store: st, fetch: fakeFetch(miss), now: function () { return T; } });
+  const ck = Object.keys(st.data.hibpCache);
+  assertEq('cache capped 300', ck.length, 300);
+  assertEq('cache evicts oldest', [ck.indexOf('f299') < 0, ck.indexOf('f0') >= 0], [true, true]);
+
+  await routerTests(L, assertEq, sites, miss, PWSFX);
+}
+
+// --- Service worker yonlendiricisi ---
+async function routerTests(L, assertEq, sites, miss, PWSFX) {
+  const T = 1700000000000;
+  const SELF = 'ccjadpibhajekoedbdplbkaofgijbnei';
+  let now = T;
+  function mk(body) {
+    const opened = [];
+    const d = {
+      selfId: SELF, store: fakeStore(), session: fakeStore(), fetch: fakeFetch(body || miss),
+      now: function () { return now; }, loadSites: async function () { return sites; },
+      openTab: function (u) { opened.push(u); }
+    };
+    d.opened = opened;
+    return d;
+  }
+  function snd(url, extra) { return Object.assign({ id: SELF, url: url, frameId: 0, tab: { id: 7 } }, extra || {}); }
+
+  // Site mesajdan degil sender.url'den alinir
+  let d = mk();
+  let r = await L.routeMessage({ type: 'pwSubmit', site: 'bank.com', password: 'Yonlendirici-1' }, snd('https://login.evil.com/x'), d);
+  assertEq('route pw reply', r, { reuse: [], leaked: 0 });
+  assertEq('route site from sender.url', JSON.stringify(d.store.data.pwIndex).indexOf('evil.com') >= 0 && JSON.stringify(d.store.data.pwIndex).indexOf('bank.com') < 0, true);
+
+  // Alt cerceve, yabanci kimlik, http disi, eksik url: hicbir sey yapilmaz
+  d = mk();
+  assertEq('route frameId 3 ignored', L.routeMessage({ type: 'pwSubmit', password: 'x' }, snd('https://a.com/', { frameId: 3 }), d), null);
+  assertEq('route foreign id ignored', L.routeMessage({ type: 'pwSubmit', password: 'x' }, snd('https://a.com/', { id: 'abcdefghijabcdefghijabcdefghijab' }), d), null);
+  assertEq('route file: ignored', L.routeMessage({ type: 'mfaCheck' }, snd('file:///C:/a.html'), d), null);
+  assertEq('route no url ignored', L.routeMessage({ type: 'mfaCheck' }, { id: SELF, frameId: 0 }, d), null);
+  assertEq('route unknown type', L.routeMessage({ type: 'xyz' }, snd('https://a.com/'), d), null);
+  assertEq('route ignored wrote nothing', [d.store.writes, d.session.writes, d.fetch.calls.length], [0, 0, 0]);
+
+  // pendingCards: ayni site alir, baska site alamaz
+  d = mk(PWSFX + ':77\r\n');
+  r = await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://www.evil.com/'), d);
+  assertEq('route leaked', r.leaked, 77);
+  assertEq('route pending cross-site rejected', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), null);
+  d = mk(PWSFX + ':77\r\n');
+  await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://www.evil.com/'), d);
+  assertEq('route pending other tab', await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/', { tab: { id: 8 } }), d), null);
+  r = await L.routeMessage({ type: 'pendingCards' }, snd('https://app.evil.com/'), d);
+  assertEq('route pending same site', r && r.leaked, 77);
+  assertEq('route pending taken once', await L.routeMessage({ type: 'pendingCards' }, snd('https://app.evil.com/'), d), null);
+  d = mk(PWSFX + ':77\r\n');
+  await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://evil.com/'), d);
+  now = T + 61000;
+  assertEq('route pending expires 60s', await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/'), d), null);
+  now = T;
+  d = mk(PWSFX + ':77\r\n');
+  await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://evil.com/'), d);
+  await L.routeMessage({ type: 'cardsShown' }, snd('https://evil.com/'), d);
+  assertEq('route cardsShown clears', await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/'), d), null);
+
+  // Hiz siniri: site basina 10 dakikada 5
+  d = mk();
+  const got = [];
+  for (let i = 0; i < 6; i++) {
+    got.push((await L.routeMessage({ type: 'pwSubmit', password: 'Deneme-' + i }, snd('https://evil.com/'), d)) !== null);
+  }
+  assertEq('rate 6 replies', got, [true, true, true, true, true, true]);
+  assertEq('rate only 5 fetched', d.fetch.calls.length, 5);
+  const idxBefore = JSON.stringify(d.store.data.pwIndex);
+  r = await L.routeMessage({ type: 'pwSubmit', password: 'Deneme-yeni' }, snd('https://evil.com/'), d);
+  assertEq('rate over limit silent', [r, d.fetch.calls.length, JSON.stringify(d.store.data.pwIndex)], [{ reuse: [], leaked: 0 }, 5, idxBefore]);
+  await L.routeMessage({ type: 'pwSubmit', password: 'Deneme-b' }, snd('https://other.com/'), d);
+  assertEq('rate per site', d.fetch.calls.length, 6);
+  now = T + 10 * 60 * 1000 + 1;
+  await L.routeMessage({ type: 'pwSubmit', password: 'Deneme-sonra' }, snd('https://evil.com/'), d);
+  assertEq('rate window resets', d.fetch.calls.length, 7);
+  assertEq('rate in session store only', [d.session.data.pwRate !== undefined, d.store.data.pwRate], [true, undefined]);
+  now = T;
+
+  // MFA: site sender'dan; mfaOpen adresi listeden
+  d = mk();
+  r = await L.routeMessage({ type: 'mfaCheck', site: 'example.com' }, snd('https://discord.com/app'), d);
+  assertEq('route mfaCheck from sender', r.show, true);
+  r = await L.routeMessage({ type: 'mfaCheck', site: 'discord.com' }, snd('https://example.com/'), d);
+  assertEq('route mfaCheck msg.site ignored', r.show, false);
+  await L.routeMessage({ type: 'mfaOpen', id: 'google', url: 'https://evil.example/' }, snd('https://discord.com/'), d);
+  assertEq('route mfaOpen url from list', d.opened, ['https://support.discord.com/x']);
+  await L.routeMessage({ type: 'mfaAnswer', answer: 'ok', site: 'google.com' }, snd('https://discord.com/'), d);
+  assertEq('route mfaAnswer from sender', [d.store.data.mfa.discord.status, d.store.data.mfa.google], ['ok', undefined]);
+  await L.routeMessage({ type: 'reuseMute', site: 'bank.com' }, snd('https://evil.com/'), d);
+  assertEq('route reuseMute from sender', d.store.data.noReuseWarn, { 'evil.com': true });
 }
 
 // --- Eklenti dosyalari: manifest, kimlik, MFA listesi ---
@@ -282,7 +425,7 @@ async function extensionFiles(L, assertEq) {
   assertEq('manifest sw', m.background && m.background.service_worker, 'background.js');
   const cs = (m.content_scripts || [])[0] || {};
   assertEq('manifest cs', [cs.matches, cs.js, cs.run_at, cs.all_frames, (m.content_scripts || []).length],
-    [['<all_urls>'], ['lib/core.js', 'content.js'], 'document_idle', false, 1]);
+    [['<all_urls>'], ['content.js'], 'document_idle', false, 1]);
   assertEq('manifest popup', m.action && m.action.default_popup, 'popup.html');
   assertEq('manifest icons', m.icons, { '16': 'icons/16.png', '48': 'icons/48.png', '128': 'icons/128.png' });
   assertEq('manifest min chrome', m.minimum_chrome_version, '110');
@@ -298,12 +441,15 @@ async function extensionFiles(L, assertEq) {
     try { new Function(src); } catch (e) { parsed = false; }
     assertEq('parses ' + f, parsed, true);
   }
+  const cjs = await (await fetch('../extension/content.js')).text();
+  assertEq('content.js independent of core', cjs.indexOf('CortmedLib'), -1);
+  assertEq('background uses router', bg.indexOf('L.routeMessage(') >= 0 && bg.indexOf('L.downloadOutcome(') >= 0, true);
   const popup = await (await fetch('../extension/popup.html')).text();
   for (const s of ['Cortmed Tarayıcı Koruması', 'Hesaplarım', 'Şifreleriniz bilgisayarınızdan çıkmaz.']) {
     assertEq('popup text ' + s, popup.indexOf(s) >= 0, true);
   }
   const pjs = await (await fetch('../extension/popup.js')).text();
-  for (const s of ['İndirme kontrolü açık ✓', 'Bu özellik için Cortmed Security kurulu olmalı', '✓ açık', '? bilinmiyor', '⏱ ertelendi']) {
+  for (const s of ['İndirme kontrolü açık ✓', 'Bu özellik için Cortmed Security kurulu olmalı', 'İndirme kontrolü ilk indirmede denenecek', '✓ açık', '? bilinmiyor', '⏱ ertelendi']) {
     assertEq('popup js text ' + s, pjs.indexOf(s) >= 0, true);
   }
 

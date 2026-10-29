@@ -6,24 +6,35 @@
 <!-- Yalnizca JS ile calisan giris: form yok, dugme tiklaninca sayfa kendi isini yapar -->
 <div id="jsLogin">
   <div class="row"><input id="user" type="text" value="ali"></div>
-  <div class="row"><input id="pw" type="password"></div>
-  <div class="actions"><button id="loginBtn" type="button">Giriş yap</button></div>
+  <div class="row">
+    <input id="pw" type="password">
+    <button id="eyeBtn" type="button" aria-label="Şifreyi göster">👁</button>
+    <button id="pressBtn" type="button" aria-pressed="false">Giriş</button>
+    <button id="ctrlBtn" type="button" aria-controls="pw">Giriş</button>
+  </div>
+  <div class="actions">
+    <button id="loginBtn" type="button">Giriş yap</button>
+    <button id="helpBtn" type="button">Yardım</button>
+    <button id="signBtn" type="button">Sign in</button>
+    <div id="roleBtn" role="button" tabindex="0">Oturum aç</div>
+    <span id="upBtn" role="button" tabindex="0" aria-label="GİRİŞ"></span>
+  </div>
 </div>
 
 <!-- Klasik form -->
 <form id="realForm" action="/nowhere">
   <input id="pw2" type="password">
-  <button id="formBtn" type="submit">Gönder</button>
+  <button id="searchBtn" type="button">Ara</button>
+  <button id="formBtn" type="submit">Tamam</button>
 </form>
 
 <!-- Sifre alani olmayan baska bir bolum -->
-<section id="other"><div><p><button id="otherBtn" type="button">Diğer düğme</button></p></div></section>
+<section id="other"><div><p><button id="otherBtn" type="button">Giriş</button></p></div></section>
 
 <script>
   document.getElementById('loginBtn').addEventListener('click', function () { /* sayfanin kendi fetch girisi */ });
   document.getElementById('realForm').addEventListener('submit', function (e) { e.preventDefault(); });
 </script>
 <script src="content-stub.js"></script>
-<script src="../extension/lib/core.js"></script>
 <script src="../extension/content.js"></script>
 <script src="content-tests.js"></script>

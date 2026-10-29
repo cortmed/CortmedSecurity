@@ -89,8 +89,23 @@
   const DAY = 24 * 3600 * 1000;
   const HIBP_TTL = 30 * DAY;
   const LATER_MS = 7 * DAY;
-  const SHOWN_MS = 1 * DAY; // gosterilip cevaplanmayan kart 1 gun sonra yeniden sorulur
+  const SHOWN_MS = 7 * DAY; // gosterilip cevaplanmayan kart "Sonra" gibi sayilir
   const HIBP_URL = 'https://api.pwnedpasswords.com/range/';
+  const HIBP_TIMEOUT_MS = 5000;
+  const HIBP_CACHE_MAX = 300;
+  const RATE_MAX = 5;
+  const RATE_WINDOW = 10 * 60 * 1000;
+  const PENDING_MS = 60000;
+
+  function direct(fn) { return fn(); }
+
+  function timeoutSignal(ms) {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+    if (typeof AbortController === 'undefined') return undefined;
+    const c = new AbortController();
+    setTimeout(function () { c.abort(); }, ms);
+    return c.signal;
+  }
 
   function randomHex(deps, n) {
     const b = deps.randomBytes ? deps.randomBytes(n) : crypto.getRandomValues(new Uint8Array(n));
@@ -107,7 +122,10 @@
 
   async function hibpCount(prefix, suffix, deps) {
     try {
-      const res = await deps.fetch(HIBP_URL + prefix, { headers: { 'Add-Padding': 'true' }, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' });
+      const res = await deps.fetch(HIBP_URL + prefix, {
+        headers: { 'Add-Padding': 'true' }, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer',
+        signal: timeoutSignal(HIBP_TIMEOUT_MS)
+      });
       if (!res || !res.ok) return null;
       return parseRange(await res.text(), suffix);
     } catch (e) {
@@ -115,36 +133,47 @@
     }
   }
 
+  function freshEntry(e, now) { return !!e && typeof e.t === 'number' && now >= e.t && now - e.t < HIBP_TTL; }
+
+  // Suresi gecenleri atar, en yeni HIBP_CACHE_MAX kaydi tutar.
+  function pruneCache(old, now) {
+    const keys = Object.keys(old || {}).filter(function (k) { return freshEntry(old[k], now); });
+    keys.sort(function (a, b) { return old[b].t - old[a].t; });
+    const out = {};
+    keys.slice(0, HIBP_CACHE_MAX).forEach(function (k) { out[k] = old[k]; });
+    return out;
+  }
+
   // msg: {site, password}. Sifre yalnizca burada, iz ve SHA-1 icin kullanilir; hicbir yere yazilmaz.
+  // deps.serial: depo oku-degistir-yaz adimlarini siraya koyar. Ozet ve HIBP sorgusu sira disinda calisir.
   async function handlePwSubmit(msg, deps) {
     const empty = { reuse: [], leaked: 0 };
+    const run = deps.serial || direct;
     const site = etld1(msg && msg.site);
-    const password = msg && typeof msg.password === 'string' ? msg.password : '';
+    let password = msg && typeof msg.password === 'string' ? msg.password : '';
     if (!site || !password) return empty;
-    const now = deps.now();
-    const salt = await getSalt(deps);
+    const salt = await run(function () { return getSalt(deps); });
     const fp = await fingerprint(password, salt);
     const sha = await sha1Hex(password);
+    password = null;
     const prefix = sha.slice(0, 5), suffix = sha.slice(5);
 
-    const st = await deps.store.get(['pwIndex', 'hibpCache', 'noReuseWarn']);
-    const rec = recordUse(st.pwIndex || {}, fp, site);
+    const cached = ((await deps.store.get(['hibpCache'])).hibpCache || {})[fp];
+    let fresh = null;
+    if (!freshEntry(cached, deps.now())) fresh = await hibpCount(prefix, suffix, deps);
 
-    const cache = {};
-    const old = st.hibpCache || {};
-    Object.keys(old).forEach(function (k) {
-      if (old[k] && now - old[k].t < HIBP_TTL && now >= old[k].t) cache[k] = old[k];
+    return run(async function () {
+      const now = deps.now();
+      const st = await deps.store.get(['pwIndex', 'hibpCache', 'noReuseWarn']);
+      const rec = recordUse(st.pwIndex || {}, fp, site);
+      const all = st.hibpCache || {};
+      if (fresh !== null) all[fp] = { n: fresh, t: now };
+      const cache = pruneCache(all, now);
+      const leaked = cache[fp] ? cache[fp].n : 0;
+      await deps.store.set({ pwIndex: rec.index, hibpCache: cache });
+      const muted = (st.noReuseWarn || {})[site];
+      return { reuse: muted ? [] : rec.otherSites, leaked: leaked };
     });
-    let leaked = 0;
-    if (cache[fp]) {
-      leaked = cache[fp].n;
-    } else {
-      const n = await hibpCount(prefix, suffix, deps);
-      if (n !== null) { leaked = n; cache[fp] = { n: n, t: now }; }
-    }
-    await deps.store.set({ pwIndex: rec.index, hibpCache: cache });
-    const muted = (st.noReuseWarn || {})[site];
-    return { reuse: muted ? [] : rec.otherSites, leaked: leaked };
   }
 
   async function handleReuseMute(msg, deps) {
@@ -166,7 +195,7 @@
     return null;
   }
 
-  // Liste sitesinde ilk giriste kart; gosterildiginde 1 gun sessiz kalir (cevap gelmezse yeniden sorar).
+  // Liste sitesinde ilk giriste kart; cevapsiz kalan kart "Sonra" gibi 7 gun sonra yeniden sorulur.
   async function handleMfaCheck(msg, deps) {
     const s = findMfaSite(deps.sites, msg && msg.site);
     if (!s) return { show: false };
@@ -200,9 +229,13 @@
     return 'unknown';
   }
 
+  // Dosya adi: yon/denetim karakterleri atilir (uzanti sahteciligi), 60 karakterle sinirlanir; uzanti gorunur kalir.
   function baseName(path) {
     const p = String(path || '').split(/[\\/]/);
-    return p[p.length - 1] || String(path || '');
+    let f = (p[p.length - 1] || String(path || ''))
+      .replace(/[\u0000-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]/g, '');
+    if (f.length > 60) f = f.slice(0, 40) + '…' + f.slice(-19);
+    return f;
   }
 
   function reasonText(res, max) {
@@ -226,11 +259,115 @@
     return null;
   }
 
+  // Kopru cevabinin sonucu: yalnizca baglanti hatasi (lastError) "kurulu degil" demektir.
+  // ERROR ya da bos cevap gorunur hicbir sey degistirmez.
+  function downloadOutcome(lastError, res, path) {
+    if (lastError) return { hostMissing: true, notice: null };
+    if (!res || typeof res !== 'object' || res.level === 'ERROR') return { notice: null };
+    return { hostMissing: false, notice: downloadNotice(path, res) };
+  }
+
+  // --- Service worker mesaj yonlendiricisi (saf) ---
+  // Site her zaman sender.url'den alinir (yalnizca ust cerceve, http/https); mesajdaki site yok sayilir.
+  function senderHost(sender) {
+    try {
+      if (!sender || sender.frameId !== 0 || typeof sender.url !== 'string') return null;
+      const u = new URL(sender.url);
+      return (u.protocol === 'https:' || u.protocol === 'http:') && u.hostname ? u.hostname : null;
+    } catch (e) { return null; }
+  }
+
+  // Site basina 10 dakikada en fazla 5 pwSubmit (oturum deposunda).
+  async function rateAllow(deps, site) {
+    const now = deps.now();
+    const st = await deps.session.get(['pwRate']);
+    const all = st.pwRate || {};
+    const out = {};
+    Object.keys(all).forEach(function (k) {
+      const kept = (all[k] || []).filter(function (t) { return now >= t && now - t < RATE_WINDOW; });
+      if (kept.length) out[k] = kept;
+    });
+    const list = out[site] || [];
+    const ok = list.length < RATE_MAX;
+    if (ok) { list.push(now); out[site] = list; }
+    await deps.session.set({ pwRate: out });
+    return ok;
+  }
+
+  // deps: {selfId, store, session, fetch, now, serial, loadSites, openTab}
+  // Donus: null (islenmedi, cevap yok) ya da cevabi veren Promise.
+  function routeMessage(msg, sender, deps) {
+    if (!sender || sender.id !== deps.selfId || !msg || typeof msg.type !== 'string') return null;
+    const host = senderHost(sender);
+    if (!host) return null;
+    const site = etld1(host);
+    const tabId = sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : -1;
+    const run = deps.serial || direct;
+    const empty = { reuse: [], leaked: 0 };
+
+    function pendingUpdate(fn) {
+      return run(async function () {
+        const st = await deps.session.get(['pending']);
+        const p = st.pending || {};
+        const r = fn(p);
+        await deps.session.set({ pending: p });
+        return r;
+      });
+    }
+
+    switch (msg.type) {
+      case 'pwSubmit': {
+        let password = typeof msg.password === 'string' ? msg.password : '';
+        msg.password = null;
+        if (!password) return Promise.resolve(empty);
+        return (async function () {
+          const allowed = await run(function () { return rateAllow(deps, site); });
+          if (!allowed) { password = null; return empty; }
+          const job = handlePwSubmit({ site: host, password: password }, deps);
+          password = null;
+          const r = await job;
+          if (r.leaked > 0 || r.reuse.length) {
+            await pendingUpdate(function (p) { p[tabId] = { site: site, result: r, t: deps.now() }; });
+          }
+          return r;
+        })();
+      }
+      case 'cardsShown':
+        return pendingUpdate(function (p) { delete p[tabId]; }).then(function () { return undefined; });
+      case 'pendingCards':
+        return pendingUpdate(function (p) {
+          const e = p[tabId];
+          delete p[tabId];
+          return e && e.site === site && deps.now() - e.t < PENDING_MS ? e.result : null;
+        });
+      case 'reuseMute':
+        return run(function () { return handleReuseMute({ site: host }, deps); });
+      case 'mfaCheck':
+        return Promise.resolve(deps.loadSites()).then(function (sites) {
+          return run(function () { return handleMfaCheck({ site: host }, Object.assign({}, deps, { sites: sites })); });
+        });
+      case 'mfaAnswer':
+        return Promise.resolve(deps.loadSites()).then(function (sites) {
+          return run(function () { return handleMfaAnswer({ site: host, answer: msg.answer }, Object.assign({}, deps, { sites: sites })); });
+        });
+      case 'mfaOpen':
+        // Adres sayfadan alinmaz; paketteki listeden bulunur.
+        return Promise.resolve(deps.loadSites()).then(function (sites) {
+          const s = findMfaSite(sites, host);
+          if (s && /^https:\/\//.test(s.url)) { deps.openTab(s.url); return { ok: true }; }
+          return { ok: false };
+        });
+      default:
+        return null;
+    }
+  }
+
   root.CortmedLib = {
     etld1: etld1, fingerprint: fingerprint, sha1Hex: sha1Hex, recordUse: recordUse,
     mfaState: mfaState, isScannable: isScannable, parseRange: parseRange,
     handlePwSubmit: handlePwSubmit, handleReuseMute: handleReuseMute, findMfaSite: findMfaSite,
     handleMfaCheck: handleMfaCheck, handleMfaAnswer: handleMfaAnswer, mfaLabel: mfaLabel,
-    downloadNotice: downloadNotice
+    downloadNotice: downloadNotice, downloadOutcome: downloadOutcome,
+    senderHost: senderHost, routeMessage: routeMessage
   };
 })(self);

@@ -6,9 +6,12 @@
 
   function render(sites, st) {
     const status = document.getElementById('status');
-    if (st.hostMissing) {
+    if (st.hostMissing === true) {
       status.textContent = 'Bu özellik için Cortmed Security kurulu olmalı';
       status.className = 'status missing';
+    } else if (st.hostMissing !== false) {
+      status.textContent = 'İndirme kontrolü ilk indirmede denenecek';
+      status.className = 'status neutral';
     } else {
       status.textContent = 'İndirme kontrolü açık ✓';
       status.className = 'status';

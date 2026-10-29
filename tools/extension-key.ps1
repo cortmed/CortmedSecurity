@@ -94,6 +94,8 @@ $flat = [Convert]::ToBase64String($pkcs1)
 $lines = for ($i = 0; $i -lt $flat.Length; $i += 64) { $flat.Substring($i, [Math]::Min(64, $flat.Length - $i)) }
 $pem = "-----BEGIN RSA PRIVATE KEY-----`n" + ($lines -join "`n") + "`n-----END RSA PRIVATE KEY-----`n"
 [IO.File]::WriteAllText($pemPath, $pem, $utf8)
+# Yalnizca gecerli kullanici okuyabilsin
+& icacls $pemPath /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
 
 $manifest = [regex]::Replace($manifest, $keyRx, ('"key": "' + $b64 + '"'), 1)
 [IO.File]::WriteAllText($manifestPath, $manifest, $utf8)
