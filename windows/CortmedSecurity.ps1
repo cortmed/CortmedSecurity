@@ -100,7 +100,7 @@ function Get-FindingTab($f) {
 
 function Initialize-EngineType {
     if (-not ('Cortmed.CortmedDb' -as [type])) {
-        Add-Type -TypeDefinition (Get-Content (Join-Path $Root 'CortmedEngine.cs') -Raw -Encoding UTF8)
+        Add-Type -TypeDefinition (Get-Content (Join-Path $Root 'CortmedEngine.cs') -Raw -Encoding UTF8) -ReferencedAssemblies System.Core
     }
 }
 
@@ -848,35 +848,58 @@ function Get-DownloadFindings {
     return $out
 }
 
+# Gece isinin imza anahtarinin acik yarisi (engine/sign_db.py --generate ciktisi)
+$DbPublicX = '26e0318081d8d3d4defd932169992251c7f4d08d46a95f395ccd22c1c48c72c5'
+$DbPublicY = '13cd8f7df0bdca9f67cd720e1f42e4174033842a5601d9c98bf68e2ef2402f4f'
+
+# Dosyayi indirir ve imzali listedeki parmak iziyle birebir ayni oldugunu dogrular
+function Get-VerifiedFile([string]$url, [string]$target, $expected) {
+    Invoke-WebRequest $url -OutFile $target -UseBasicParsing -TimeoutSec 600
+    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant()
+    if ($sha -ne $expected.sha256) {
+        Remove-Item $target -Force -ErrorAction SilentlyContinue
+        throw "parmak izi tutmuyor: $url"
+    }
+}
+
 function Update-Database {
     $cfg = Get-Config
     $base = ([string]$cfg.updateUrl).Trim().TrimEnd('/')
     if (-not $base) { return 'Güncelleme adresi ayarlı değil' }
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $remote = (Invoke-WebRequest "$base/version.txt" -UseBasicParsing -TimeoutSec 30).Content
-        if ($remote -is [byte[]]) { $remote = [Text.Encoding]::ASCII.GetString($remote) }
-        $remote = $remote.Trim()
+        Initialize-EngineType
+        # Once imzali dosya listesi: imza Cortmed'in gizli anahtariyla atilmamissa hicbir sey indirilmez
+        $manifestBytes = (Invoke-WebRequest "$base/manifest.json" -UseBasicParsing -TimeoutSec 30).Content
+        if ($manifestBytes -is [string]) { $manifestBytes = [Text.Encoding]::UTF8.GetBytes($manifestBytes) }
+        $sigFile = Join-Path $DataDir 'manifest.sig.tmp'
+        Invoke-WebRequest "$base/manifest.sig" -OutFile $sigFile -UseBasicParsing -TimeoutSec 30
+        $sig = [IO.File]::ReadAllBytes($sigFile); Remove-Item $sigFile -Force
+        if (-not [Cortmed.Signing]::Verify($manifestBytes, $sig, $DbPublicX, $DbPublicY)) {
+            throw 'imza dogrulanamadi; guncelleme reddedildi'
+        }
+        $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
+        $remote = $manifest.version
         $verFile = Join-Path $DataDir 'db-version.txt'
         if ((Test-Path $verFile) -and (Get-Content $verFile -Raw).Trim() -eq $remote) {
             return "Veritabanı zaten güncel ($remote)"
         }
         $tmp = Join-Path $DataDir 'windows.cmdb.tmp'
-        Invoke-WebRequest "$base/windows.cmdb" -OutFile $tmp -UseBasicParsing -TimeoutSec 600
+        Get-VerifiedFile "$base/windows.cmdb" $tmp $manifest.files.'windows.cmdb'
         # Bozuk ya da yarim veritabanini asla kullanma
         $new = [Cortmed.CortmedDb]::Load($tmp)
         if ($script:Db -and -not (Test-DbAcceptable $new $script:Db)) {
             Remove-Item $tmp -Force
             throw "indirilen veritabani reddedildi ($($new.SignatureCount) imza)"
         }
-        Move-Item $tmp (Join-Path $DataDir 'windows.cmdb') -Force
         $ytmp = Join-Path $DataDir 'windows.yarc.tmp'
-        Invoke-WebRequest "$base/windows.yarc" -OutFile $ytmp -UseBasicParsing -TimeoutSec 600
+        Get-VerifiedFile "$base/windows.yarc" $ytmp $manifest.files.'windows.yarc'
+        Move-Item $tmp (Join-Path $DataDir 'windows.cmdb') -Force
         Move-Item $ytmp (Join-Path $DataDir 'windows.yarc') -Force
         # Surum ancak her sey indikten sonra kaydedilir; yarida kalirsa bir sonraki denemede tekrar indirilir
         Set-Content $verFile $remote
         Initialize-Engine
-        Write-Log "Veritabani guncellendi: $remote"
+        Write-Log "Veritabani guncellendi (imza dogrulandi): $remote"
         return "Veritabanı güncellendi ($remote)"
     } catch {
         Write-Log "Veritabani guncellenemedi: $_"

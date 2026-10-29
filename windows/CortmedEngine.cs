@@ -201,4 +201,59 @@ namespace Cortmed
             }
         }
     }
+
+    /// Gece isinin imzasini dogrular: ECDSA P-256 + SHA-256, imza DER bicimde (engine/sign_db.py).
+    public static class Signing
+    {
+        public static bool Verify(byte[] data, byte[] derSignature, string publicXHex, string publicYHex)
+        {
+            try
+            {
+                ECPoint q = new ECPoint();
+                q.X = FromHex(publicXHex);
+                q.Y = FromHex(publicYHex);
+                ECParameters p = new ECParameters();
+                p.Curve = ECCurve.NamedCurves.nistP256;
+                p.Q = q;
+                using (ECDsa ecdsa = ECDsa.Create(p))
+                {
+                    return ecdsa.VerifyData(data, DerToP1363(derSignature), HashAlgorithmName.SHA256);
+                }
+            }
+            catch { return false; }
+        }
+
+        // DER: 30 len 02 rlen r 02 slen s  ->  r||s (her biri 32 bayt)
+        private static byte[] DerToP1363(byte[] der)
+        {
+            int pos = 2;
+            if ((der[1] & 0x80) != 0) pos += der[1] & 0x7F;
+            byte[] r = ReadInt(der, ref pos);
+            byte[] s = ReadInt(der, ref pos);
+            byte[] raw = new byte[64];
+            Buffer.BlockCopy(r, 0, raw, 32 - r.Length, r.Length);
+            Buffer.BlockCopy(s, 0, raw, 64 - s.Length, s.Length);
+            return raw;
+        }
+
+        private static byte[] ReadInt(byte[] der, ref int pos)
+        {
+            if (der[pos] != 0x02) throw new InvalidDataException("DER imza bozuk");
+            int len = der[pos + 1];
+            int start = pos + 2;
+            pos = start + len;
+            while (len > 32 && der[start] == 0) { start++; len--; }
+            if (len > 32) throw new InvalidDataException("DER imza bozuk");
+            byte[] v = new byte[len];
+            Buffer.BlockCopy(der, start, v, 0, len);
+            return v;
+        }
+
+        private static byte[] FromHex(string s)
+        {
+            byte[] r = new byte[s.Length / 2];
+            for (int i = 0; i < r.Length; i++) r[i] = Convert.ToByte(s.Substring(i * 2, 2), 16);
+            return r;
+        }
+    }
 }

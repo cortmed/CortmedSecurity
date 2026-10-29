@@ -42,13 +42,23 @@ jobs:
           pip install yara-python==4.5.4
           python engine/build_yara.py
 
+      # Uygulamalar sadece bu imzayla dogrulanan dosyalari kabul eder; anahtar yoksa is durur
+      - name: Dosyalari imzala
+        env:
+          DB_SIGNING_KEY: ${{ secrets.DB_SIGNING_KEY }}
+        run: |
+          pip install cryptography==44.0.2
+          cp engine/rules/android_rules.json engine/dist/
+          python engine/sign_db.py
+
       - name: db-latest surumune yukle
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp engine/rules/android_rules.json engine/dist/
           gh release view db-latest >/dev/null 2>&1 || \
             gh release create db-latest --title "Cortmed DB" --notes "Otomatik gece guncellemesi"
+          # Once dosyalar, en son imzali liste: cihaz yarim bir yuklemeyi gorurse parmak izleri tutmaz, reddeder
           gh release upload db-latest engine/dist/version.txt engine/dist/android.cmdb \
             engine/dist/windows.cmdb engine/dist/android_rules.json \
             engine/dist/windows.yarc engine/dist/yara-version.txt --clobber
+          gh release upload db-latest engine/dist/manifest.json engine/dist/manifest.sig --clobber

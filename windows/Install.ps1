@@ -86,7 +86,7 @@ New-Shortcut $programs 'Panel' 'Cortmed Security'
 
 # Kisayollara uygulama kimligi: gorev cubugu ve bildirimlerde Cortmed adi ve logosu
 try {
-    Add-Type -TypeDefinition (Get-Content (Join-Path $dest 'CortmedEngine.cs') -Raw -Encoding UTF8)
+    Add-Type -TypeDefinition (Get-Content (Join-Path $dest 'CortmedEngine.cs') -Raw -Encoding UTF8) -ReferencedAssemblies System.Core
     foreach ($lnk in @($programs, $desktop)) { [Cortmed.AppIdentity]::SetShortcutAppId($lnk) }
 } catch { Write-Host "  (Kisayol kimligi ayarlanamadi: $($_.Exception.Message))" }
 

@@ -62,22 +62,46 @@ object DbUpdater {
         val base = Store(ctx).updateUrl.trim().trimEnd('/')
         if (base.isEmpty()) return "Güncelleme adresi ayarlı değil"
         val prefs = ctx.getSharedPreferences("cortmed", Context.MODE_PRIVATE)
-        val remoteVersion = String(download("$base/version.txt")).trim()
+        // Once imzali dosya listesi: imza Cortmed'in gizli anahtariyla atilmamissa hicbir sey indirilmez
+        val manifestBytes = download("$base/manifest.json")
+        check(verifySignature(manifestBytes, download("$base/manifest.sig"))) { "imza dogrulanamadi" }
+        val manifest = org.json.JSONObject(String(manifestBytes))
+        val remoteVersion = manifest.getString("version")
         if (remoteVersion == prefs.getString("db_version", "")) return "Veritabanı zaten güncel ($remoteVersion)"
+        val files = manifest.getJSONObject("files")
 
-        val dbBytes = download("$base/${CmdbDatabase.FILE_NAME}")
+        val dbBytes = downloadVerified("$base/${CmdbDatabase.FILE_NAME}", files.getJSONObject(CmdbDatabase.FILE_NAME))
         // Bozuk ya da yarim veritabanini asla kullanma
         check(CmdbDatabase.isAcceptable(CmdbDatabase.parse(dbBytes), CmdbDatabase.get(ctx))) { "veritabani reddedildi" }
+        val rules = downloadVerified("$base/${Rules.FILE_NAME}", files.getJSONObject(Rules.FILE_NAME))
+        Rules(org.json.JSONObject(String(rules)))
         atomicWrite(CmdbDatabase.updatedFile(ctx), dbBytes)
-        runCatching {
-            val rules = download("$base/${Rules.FILE_NAME}")
-            Rules(org.json.JSONObject(String(rules)))
-            atomicWrite(Rules.updatedFile(ctx), rules)
-        }
+        atomicWrite(Rules.updatedFile(ctx), rules)
         CmdbDatabase.invalidate()
         prefs.edit().putString("db_version", remoteVersion).apply()
         "Veritabanı güncellendi ($remoteVersion)"
     }.onFailure { Log.w(Scanner.TAG, "veritabani guncellenemedi", it) }.getOrNull()
+
+    /** Gece isinin imza anahtarinin acik yarisi (engine/sign_db.py --generate ciktisi). */
+    private const val PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEJuAxgIHY09Te/ZMhaZkiUcf00I1GqV85XM0iwcSMcsUTzY998L3Kn2fNcg4fQuQXQDOEKlYB2cmL9o4u8kAvTw=="
+
+    fun verifySignature(data: ByteArray, signature: ByteArray): Boolean = runCatching {
+        val key = java.security.KeyFactory.getInstance("EC")
+            .generatePublic(java.security.spec.X509EncodedKeySpec(android.util.Base64.decode(PUBLIC_KEY, android.util.Base64.DEFAULT)))
+        java.security.Signature.getInstance("SHA256withECDSA").run {
+            initVerify(key)
+            update(data)
+            verify(signature)
+        }
+    }.getOrDefault(false)
+
+    /** Dosyayi indirir ve imzali listedeki parmak iziyle birebir ayni oldugunu dogrular. */
+    private fun downloadVerified(url: String, expected: org.json.JSONObject): ByteArray {
+        val bytes = download(url)
+        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
+        check(sha == expected.getString("sha256")) { "parmak izi tutmuyor: $url" }
+        return bytes
+    }
 
     private fun download(url: String): ByteArray {
         val conn = URL(url).openConnection() as HttpURLConnection
