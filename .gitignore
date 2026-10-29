@@ -19,3 +19,6 @@ branding/kaynak-gorsel.jpg
 *.log
 _kontrol.txt
 
+
+# Gelistirme araclarinin calisma alani
+.superpowers/
