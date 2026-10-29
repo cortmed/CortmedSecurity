@@ -1,0 +1,2 @@
+{"event":{"EventId":11,"Pid":4400,"ParentPid":900,"Image":"C:\\Users\\k\\Downloads\\evil.exe","TargetFilename":"C:\\Users\\k\\AppData\\Local\\Discord\\app-1.0.9\\modules\\discord_desktop_core-1\\discord_desktop_core\\index.js"},
+ "expect":{"behavior":"TamperOtherApp","pidIs":"self"}}

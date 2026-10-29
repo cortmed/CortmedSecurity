@@ -1,0 +1,2 @@
+{"event":{"EventId":1,"Pid":4301,"ParentPid":4300,"Image":"C:\\Windows\\System32\\schtasks.exe","ParentImage":"C:\\Users\\k\\Downloads\\evil.exe","CommandLine":"schtasks.exe /create /tn Upd /tr C:\\x.exe /sc onlogon"},
+ "expect":{"behavior":"Persistence","pidIs":"parent"}}

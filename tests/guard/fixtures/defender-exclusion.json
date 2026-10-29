@@ -1,0 +1,2 @@
+{"event":{"EventId":13,"Pid":4600,"ParentPid":900,"Image":"C:\\Users\\k\\Downloads\\evil.exe","TargetObject":"HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Exclusions\\Paths\\C:\\evil"},
+ "expect":{"behavior":"DisableProtection","pidIs":"self"}}

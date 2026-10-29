@@ -1,0 +1,2 @@
+{"event":{"EventId":8,"Pid":4700,"ParentPid":900,"Image":"C:\\Users\\k\\Downloads\\evil.exe","TargetPid":1234,"TargetImage":"C:\\Windows\\explorer.exe"},
+ "expect":{"behavior":"Injection","pidIs":"self"}}
