@@ -1188,6 +1188,9 @@ public static class GuardTests
         var f = (Dictionary<string, object>)list[0];
         Assert((string)f["level"] == "RED" && (string)f["key"] == "behavior:" + EvilHash && (string)f["tab"] == "threat", "RED bulgu");
         Assert(((string)f["title"]).Contains("evil.exe") && ((string)f["report"]).Contains("100"), "baslik/rapor");
+        const string killNote = "Program kapatıldı. Dosyası hâlâ bilgisayarınızda; tanımıyorsanız 'Karantinaya al' ile kaldırın.";
+        Assert(((string)f["detail"]).EndsWith(killNote) && ((string)f["report"]).Contains(killNote), "kapatma notu hicbir sey kalmadi demez: " + f["detail"]);
+        Assert(!((string)f["report"]).Contains("Dosyaya dokunulmadı"), "eski not");
         Assert(!File.Exists(Path.Combine(dir, "allowed.txt")) || !ReadData(dir, "allowed.txt").Contains(EvilHash), "kill izin listesine eklemez");
     }
 

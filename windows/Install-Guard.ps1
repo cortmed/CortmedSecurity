@@ -165,6 +165,25 @@ function Move-Aside([string]$dir) {
 }
 # --- /kopya ---
 
+# Onarim takimi: bu betik ve -Source'un istedigi her sey, -Source olarak kullanilabilecek duzende $to'ya
+# (Program Files\Cortmed). Panel onarimda yalnizca bu, kullanicinin yazamadigi kopyayi yukseltir.
+function Copy-RepairKit([string]$to, [string]$self, [string]$engineCs, [string[]]$csFiles, [string]$sysmonXml,
+    [string]$rules, [string]$uninstaller, [string]$sigDir) {
+    $kitGuard = Join-Path $to 'guard'
+    # Eski kaynaklar kalmasin; rmdir /s baglantilari izlemez ($to yalnizca yoneticilerce yazilabilir)
+    if (Test-Path -LiteralPath $kitGuard) { & (Join-Path ([Environment]::SystemDirectory) 'cmd.exe') /c rmdir /s /q "$kitGuard" | Out-Null }
+    foreach ($d in 'Core', 'Service') { New-Item -ItemType Directory -Force (Join-Path $kitGuard $d) | Out-Null }
+    foreach ($f in $csFiles) { Copy-Item -LiteralPath $f (Join-Path $kitGuard (Split-Path (Split-Path $f -Parent) -Leaf)) -Force }
+    Copy-Item -LiteralPath $sysmonXml (Join-Path $kitGuard 'sysmon-cortmed.xml') -Force
+    Copy-Item -LiteralPath $self (Join-Path $to 'Install-Guard.ps1') -Force
+    Copy-Item -LiteralPath $engineCs (Join-Path $to 'CortmedEngine.cs') -Force
+    Copy-Item -LiteralPath $rules (Join-Path $to 'behavior_rules.json') -Force
+    Copy-Item -LiteralPath $uninstaller (Join-Path $to 'Uninstall-Guard.ps1') -Force
+    foreach ($m in 'manifest.json', 'manifest.sig') {
+        if ($sigDir) { Copy-Item -LiteralPath (Join-Path $sigDir $m) (Join-Path $to $m) -Force }
+    }
+}
+
 function First([string[]]$paths) { $paths | Where-Object { Test-Path $_ } | Select-Object -First 1 }
 $guardDir = Join-Path $Source 'guard'
 $engineCs = Join-Path $Source 'CortmedEngine.cs'
@@ -185,6 +204,8 @@ if (-not (Test-Path $sysmonXml)) { $missing += 'guard\sysmon-cortmed.xml' }
 if (-not $rules) { $missing += 'behavior_rules.json' }
 if (-not (Test-Path $uninstaller)) { $missing += 'Uninstall-Guard.ps1' }
 if ($missing) { throw "Davranış bekçisi dosyaları bulunamadı: $($missing -join ', ')" }
+# Onarim: kaynak Program Files\Cortmed'in kendisi (panel). Dosyalar zaten yerinde; yalnizca klasor guvenilirse calisir.
+$fromApp = [string]::Equals($Source.TrimEnd('\'), $app.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
 
 # Yonetici degilse ya da 64 bit Windows'ta 32 bit PowerShell ise (Program Files x86 olur) 64 bit PowerShell'i
 # yonetici olarak yeniden baslat, profil yuklenmeden. UAC reddedilirse Start-Process istisna firlatir (cagirana gider).
@@ -211,6 +232,13 @@ catch {
 }
 $appH = Open-TrustedDir $app
 $dataH = Open-TrustedDir $data
+if ($fromApp -and -not $appH -and -not $WhatIf) {
+    # Kaynak klasor yoneticiye ozel degil: oradan derlenip hizmet olarak calistirilmaz
+    if ($dataH) { $dataH.Dispose() }
+    Write-Host "  Davranış bekçisi onarılamadı: $app güvenilir durumda değil. Cortmed Security'yi indirdiğiniz paketten yeniden kurun." -ForegroundColor Red
+    if ($Elevated) { Read-Host '  Kapatmak için Enter' | Out-Null }
+    exit 1
+}
 $oursMarked = $dataH -and (Test-Path -LiteralPath $markOurs)
 if ($WhatIf -and $SysmonState -ne 'Auto') {
     $sysmonPresent = ($SysmonState -eq 'Present')
@@ -235,6 +263,8 @@ $plan = @(
     (DirStep $data $dataH),
     "Bekçi kaynakları $app\src klasörüne kopyalanıp orada CortmedGuard.exe olarak derlenecek",
     "Kaldırma betiği $app\Uninstall-Guard.ps1 olarak kopyalanacak",
+    $(if ($fromApp) { "Onarım: kaynak $app (yalnızca yöneticilerin yazabildiği kopya)" }
+        else { "Onarım için kurulum dosyaları (Install-Guard.ps1, kaynaklar, kurallar, Sysmon ayarı) $app klasörüne kopyalanacak" }),
     "Davranış kuralları ve Sysmon ayarı $data klasörüne kopyalanacak",
     $sysmonStep,
     $(if ($guardExists) { 'CortmedGuard hizmeti durdurulup güncellenecek ve yeniden başlatılacak' }
@@ -334,8 +364,12 @@ try {
     $out = & $csc @cscArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $newExe)) { throw "CortmedGuard derlenemedi: $($out -join ' ')" }
     Write-Host '  [OK] CortmedGuard.exe derlendi' -ForegroundColor Green
-    # Kaldirma betigi: Uninstall.ps1 yalnizca bu (kullanicinin yazamadigi) kopyayi yukseltir
-    Copy-Item $uninstaller $app -Force
+    # Kaldirma betigi (Uninstall.ps1 yalnizca bu kopyayi yukseltir) ve onarim takimi (panel onarimda yalnizca
+    # bu kopyayi yukseltir). Kaynak zaten Program Files\Cortmed ise dosyalar yerinde.
+    if (-not $fromApp) {
+        Copy-RepairKit $app $PSCommandPath $engineCs $csFiles $sysmonXml $rules $uninstaller $sigDir
+        Write-Host '  [OK] Onarım dosyaları Program Files''a kopyalandı' -ForegroundColor Green
+    }
 
     # 4) Sysmon: var + guvenilir isaret -> bizim, ayari tazele; var + isaret yok -> onceden kurulu; yok -> kur
     if ($sysmonPresent -and -not $sysmonOurs) {

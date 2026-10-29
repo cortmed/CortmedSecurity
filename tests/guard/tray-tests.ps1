@@ -124,6 +124,42 @@ try {
     $nt = Receive-GuardPrompt $st3 '{"id":"u2","program":"a.exe"}' $answer -Notify $notify -Now $now -NoShow
     TCheck 'turu olmayan satir yok sayilir' ($nt -eq $null) ''
 
+    # Kapat + result ok=true: otomatik karantina ayari aciksa sorunun dosyasi mevcut Invoke-Quarantine ile karantinaya
+    $qcalls = New-Object Collections.ArrayList
+    $fakeQ = { param($path) [void]$qcalls.Add($path); $true }
+    $st6 = New-GuardState
+    $k1 = Receive-GuardPrompt $st6 $json.Replace('"p1"', '"k1"') $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ
+    if ($k1) { Click (Btn $k1 $killText) }
+    TCheck 'kapat: sonuc gelmeden karantina yok' ($qcalls.Count -eq 0) ($qcalls -join ',')
+    [void](Receive-GuardPrompt $st6 '{"type":"result","id":"k1","ok":true}' $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ)
+    TCheck 'kapat + ok=true: sorunun yolu karantinaya verilir' (($qcalls -join ',') -eq 'C:\Users\x\Downloads\kotu.exe') ($qcalls -join ',')
+    [void](Receive-GuardPrompt $st6 '{"type":"result","id":"k1","ok":true}' $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ)
+    TCheck 'ikinci ok=true: yeniden karantina yok' ($qcalls.Count -eq 1) ($qcalls -join ',')
+    $k2 = Receive-GuardPrompt $st6 $json.Replace('"p1"', '"k2"') $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ
+    if ($k2) { Click (Btn $k2 $allowText) }
+    [void](Receive-GuardPrompt $st6 '{"type":"result","id":"k2","ok":true}' $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ)
+    $k3 = Receive-GuardPrompt $st6 $json.Replace('"p1"', '"k3"') $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ
+    if ($k3) { Click (Btn $k3 $killText) }
+    [void](Receive-GuardPrompt $st6 '{"type":"result","id":"k3","ok":false}' $answer -Notify $notify -Now $now -NoShow -Quarantine $fakeQ)
+    TCheck 'izin ya da ok=false: karantina yok' ($qcalls.Count -eq 1) ($qcalls -join ',')
+
+    # Varsayilan karantina: ayara bagli, mevcut Invoke-Quarantine (calisma kopyasinin Karantina klasoru)
+    $victim = Join-Path $work 'indirilen.exe'
+    [IO.File]::WriteAllBytes($victim, [byte[]](77, 90))
+    $kjson = '{"type":"ask","id":"q1","program":"indirilen.exe","path":' + (ConvertTo-Json $victim) + ',"publisher":"","score":90,"reasons":["r"]}'
+    $st7 = New-GuardState
+    $q1 = Receive-GuardPrompt $st7 $kjson $answer -Notify $notify -Now $now -NoShow
+    if ($q1) { Click (Btn $q1 $killText) }
+    [void](Receive-GuardPrompt $st7 '{"type":"result","id":"q1","ok":true}' $answer -Notify $notify -Now $now -NoShow)
+    TCheck 'otomatik karantina kapaliyken dosyaya dokunulmaz' (Test-Path $victim) ''
+    $cfg = Get-Config; $cfg.autoQuarantine = $true; Save-Config $cfg
+    $q2 = Receive-GuardPrompt $st7 $kjson.Replace('"q1"', '"q2"') $answer -Notify $notify -Now $now -NoShow
+    if ($q2) { Click (Btn $q2 $killText) }
+    [void](Receive-GuardPrompt $st7 '{"type":"result","id":"q2","ok":true}' $answer -Notify $notify -Now $now -NoShow)
+    TCheck 'otomatik karantina acikken dosya Karantina klasorune tasinir' ((-not (Test-Path $victim)) -and
+        @(Get-ChildItem (Join-Path $work 'Karantina') -Filter '*indirilen.exe.karantina').Count -eq 1) ''
+    $cfg.autoQuarantine = $false; Save-Config $cfg
+
     # Zamanlayici tiki: sahte istemci ve saat (gercek bekleme yok)
     $fake = New-Object psobject -Property @{ Connected = $false; Q = (New-Object Collections.Queue) }
     $fake | Add-Member ScriptMethod TryDequeuePrompt { param([ref]$j) if ($this.Q.Count -gt 0) { $j.Value = $this.Q.Dequeue(); return $true }; return $false }
@@ -176,9 +212,48 @@ try {
     TCheck 'davranis bulgusu sari, ozgun seviye saklanir' ($t.Count -eq 1 -and $t[0].level -eq 'YELLOW' -and $t[0].guardLevel -eq 'RED') ''
     TCheck 'davranis bulgusu alanlari' ($t.Count -eq 1 -and $t[0].title -eq 'Durdurulan program: kotu.exe' -and $t[0].report -eq 'Program: C:\x\kotu.exe' -and $t[0].path -eq 'C:\x\kotu.exe') ''
     TCheck 'davranis bulgusu tarihi gosterilir' ($t.Count -eq 1 -and $t[0].detail -like '29.10.2026 *Belgelerinizi*') $t[0].detail
-    $grp = @(Get-AdviceGroups $sum.advice | Where-Object { $_.cat.title -eq 'Durdurulan programlar' })
-    TCheck '"Durdurulan programlar" grubu iki bulguyla' ($grp.Count -eq 1 -and @($grp[0].items).Count -eq 2) ''
-    TCheck '"Durdurulan programlar" aciklamasi' ($grp.Count -eq 1 -and $grp[0].cat.text -eq 'Cortmed bu programları durdurdu. Kapatmayı seçtiyseniz bir şey yapmanıza gerek yok.') ''
+    $groups = @(Get-AdviceGroups $sum.advice)
+    $grp = @($groups | Where-Object { $_.cat.title -eq 'Durdurulan programlar' })
+    TCheck '"Durdurulan programlar" yalnizca kapatilan (RED) bulguyla' ($grp.Count -eq 1 -and @($grp[0].items).Count -eq 1 -and
+        $grp[0].items[0].guardLevel -eq 'RED') ''
+    $redText = 'Cortmed bu programları durdurdu ve sizin onayınızla kapattı. Dosyaları hâlâ bilgisayarınızda; tanımıyorsanız listeden açıp ''Karantinaya al'' ile kaldırın.'
+    TCheck '"Durdurulan programlar" aciklamasi hicbir sey kalmadi demez' ($grp.Count -eq 1 -and $grp[0].cat.text -eq $redText) $grp[0].cat.text
+    $wgrp = @($groups | Where-Object { $_.cat.title -eq 'Şüpheli davranan programlar' })
+    TCheck '"Supheli davranan programlar" yalnizca durdurulmayan (YELLOW) bulguyla' ($wgrp.Count -eq 1 -and @($wgrp[0].items).Count -eq 1 -and
+        $wgrp[0].items[0].guardLevel -eq 'YELLOW' -and $wgrp[0].items[0].title -eq 'Şüpheli davranış: b.exe') ''
+    $warnText = 'Bu programlar şüpheli bir şey yaptı ama durdurulmadı. Tanımıyorsanız listeden açıp ''Karantinaya al'' ile kaldırın.'
+    TCheck '"Supheli davranan programlar" durust aciklama' ($wgrp.Count -eq 1 -and $wgrp[0].cat.text -eq $warnText) $wgrp[0].cat.text
+    TCheck 'Warn bulgusu sari kalir' ($wgrp.Count -eq 1 -and $wgrp[0].items[0].level -eq 'YELLOW') ''
+
+    # Ayrintilar penceresi: davranis bulgusu icin "Karantinaya al" (dosya varsa); dosya bulgusu icin yok
+    $qf = Join-Path $work 'supheli.exe'
+    [IO.File]::WriteAllBytes($qf, [byte[]](77, 90))
+    $rf = New-ReportForm ([pscustomobject]@{ key = 'behavior:x'; level = 'YELLOW'; title = 't'; detail = 'd'; path = $qf; report = 'r' })
+    $rbtns = @(All-Controls $rf | Where-Object { $_ -is [Windows.Forms.Button] } | ForEach-Object Text)
+    TCheck 'ayrintilar: davranis bulgusunda Karantinaya al' ($rbtns -contains 'Karantinaya al') ($rbtns -join ' / ')
+    TCheck 'ayrintilar penceresi gosterilmedi' (-not $rf.Visible) ''
+    $rf.Dispose()
+    $rf2 = New-ReportForm ([pscustomobject]@{ key = 'behavior:y'; level = 'YELLOW'; title = 't'; detail = 'd'; path = (Join-Path $work 'yok.exe'); report = 'r' })
+    TCheck 'ayrintilar: dosya yoksa Karantinaya al yok' (@(All-Controls $rf2 | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Karantinaya al' }).Count -eq 0) ''
+    $rf2.Dispose()
+    $qsrc = Get-Content (Join-Path $RepoRoot 'windows\CortmedSecurity.ps1') -Raw -Encoding UTF8
+    TCheck 'Karantinaya al mevcut Invoke-Quarantine''i kullanir' (@([regex]::Matches($qsrc, 'function Invoke-Quarantine')).Count -eq 1 -and
+        $qsrc -match "'Karantinaya al'[\s\S]{0,800}Invoke-Quarantine") ''
+
+    # Yeni Warn anahtari basina bir kisa (kalici olmayan) bildirim; gosterilenler tepsinin veri klasorunde
+    $wn = New-Object Collections.ArrayList
+    $wnotify = { param($title, $text, $sticky) [void]$wn.Add("$sticky|$text") }
+    $c1 = Invoke-GuardWarnNotices $wnotify
+    TCheck 'Warn bildirimi: yeni anahtar icin bir kez, kalici degil' ($wn.Count -eq 1 -and $wn[0] -like 'False|*b.exe*') ($wn -join ' / ')
+    TCheck 'Warn bildirimi: kapatilan (RED) bulgu icin yok' (-not ($wn -join ' ').Contains('kotu.exe')) ($wn -join ' / ')
+    [void](Invoke-GuardWarnNotices $wnotify)
+    TCheck 'Warn bildirimi: ayni anahtar ikinci kez yok' ($wn.Count -eq 1) ($wn -join ' / ')
+    TCheck 'Warn bildirimi: gosterilenler data klasorunde' ((Test-Path (Join-Path $work 'data\guard-warn-shown.txt')) -and
+        (Get-Content (Join-Path $work 'data\guard-warn-shown.txt') -Raw).Contains('behavior:' + ('b' * 64))) ''
+    $finding2 = $finding.TrimEnd(']') + ',{"key":"behavior:' + ('c' * 64) + '","level":"YELLOW","title":"Şüpheli davranış: c.exe","detail":"x","path":"C:\\x\\c.exe","tab":"threat","report":"r"}]'
+    [IO.File]::WriteAllText($fj, $finding2, (New-Object Text.UTF8Encoding($false)))
+    [void](Invoke-GuardWarnNotices $wnotify)
+    TCheck 'Warn bildirimi: yeni ikinci anahtar bir kez' ($wn.Count -eq 2 -and $wn[1] -like '*c.exe*') ($wn -join ' / ')
     [IO.File]::WriteAllText($fj, '[{"key": bozuk', (New-Object Text.UTF8Encoding($false)))
     $err = ''
     try { $sum = Get-StatusSummary } catch { $err = $_.Exception.Message }
@@ -211,6 +286,22 @@ try {
     # Bekci veri klasoru varsayilani ProgramData\Cortmed (testte degistirildi)
     $src = Get-Content (Join-Path $RepoRoot 'windows\CortmedSecurity.ps1') -Raw -Encoding UTF8
     TCheck 'panel dugmesi Install-Guard.ps1 -Source ile calistirir' ($src -match "Install-Guard\.ps1" -and $src -match "'-Source'") ''
+
+    # Onarim (hizmet var): yalnizca Program Files\Cortmed'deki yonetici kopyasi; ilk kurulum: paket kopyasi ($Root)
+    $pfFake = Join-Path $work 'pf'
+    New-Item -ItemType Directory -Force (Join-Path $pfFake 'Cortmed') | Out-Null
+    'x' | Set-Content (Join-Path $work 'Install-Guard.ps1')
+    $fresh = Get-GuardSetupCommand $false $pfFake
+    TCheck 'ilk kurulum: paket kopyasi' ($fresh.script -eq (Join-Path $work 'Install-Guard.ps1') -and $fresh.source -eq $work) "$($fresh.script) | $($fresh.source)"
+    $none = Get-GuardSetupCommand $true $pfFake
+    TCheck 'onarim: Program Files kopyasi yoksa kullanici kopyasi YUKSELTILMEZ' ($null -eq $none.script -and $none.missing) "$($none.script)"
+    'x' | Set-Content (Join-Path $pfFake 'Cortmed\Install-Guard.ps1')
+    $rep = Get-GuardSetupCommand $true $pfFake
+    TCheck 'onarim: Program Files\Cortmed\Install-Guard.ps1 -Source Program Files\Cortmed' ($rep.script -eq (Join-Path $pfFake 'Cortmed\Install-Guard.ps1') -and
+        $rep.source -eq (Join-Path $pfFake 'Cortmed')) "$($rep.script) | $($rep.source)"
+    $pfReal = Get-ProgramFilesDir
+    TCheck 'Program Files ortam degiskeni olmadan bulunur' ($pfReal -and (Test-Path $pfReal) -and $pfReal -notmatch 'x86') $pfReal
+    TCheck 'Get-ProgramFilesDir ortam degiskeni kullanmaz' ((Get-Command Get-ProgramFilesDir).Definition -notmatch '\$env:') ''
 } catch {
     TCheck 'tepsi testleri calisti' $false $_.Exception.Message
 } finally {

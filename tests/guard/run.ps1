@@ -224,6 +224,38 @@ Check 'Install-Guard -WhatIf: Sysmon onceden kurulu' ($rPresent[0] -match ('Sysm
 Check 'Install-Guard -WhatIf: Sysmon yokken onceden kurulu demez' ($rAbsent[0] -notmatch 'dokunulmayacak') ''
 Check 'Install-Guard -WhatIf: hizmet adimi listelenir' ($rAbsent[0] -match 'CortmedGuard') ''
 Check 'Install-Guard -WhatIf: kaldirma betigi Program Files''a kopyalanir' ($rAbsent[0] -match 'Uninstall-Guard\.ps1') ''
+Check 'Install-Guard -WhatIf: onarim dosyalari Program Files''a kopyalanir' ($rAbsent[0] -match ('Onar' + [char]0x131 + 'm i' + [char]0xE7 + 'in kurulum dosyalar' + [char]0x131)) $rAbsent[0]
+
+# Onarim takimi: Copy-RepairKit gecici klasore; takim kendi basina -Source olarak kullanilabilir (-WhatIf)
+$igAst = $null
+if (Test-Path $ig) { $t0 = $null; $e0 = $null; $igAst = [System.Management.Automation.Language.Parser]::ParseFile($ig, [ref]$t0, [ref]$e0) }
+$rkFn = if ($igAst) { $igAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Copy-RepairKit' }, $true) | Select-Object -First 1 }
+Check 'Install-Guard Copy-RepairKit tanimli' ($rkFn -ne $null) ''
+if ($rkFn) {
+    . ([ScriptBlock]::Create($rkFn.Extent.Text))
+    $kit = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-kit-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $kit | Out-Null
+    try {
+        $wsrc = Join-Path $root 'windows'
+        $kcs = @(foreach ($d in 'Core', 'Service') { Get-ChildItem (Join-Path $wsrc "guard\$d") -Filter *.cs | ForEach-Object FullName })
+        # Eski bir kaynak kalmamali
+        New-Item -ItemType Directory -Force (Join-Path $kit 'guard\Core') | Out-Null
+        'eski' | Set-Content (Join-Path $kit 'guard\Core\Eski.cs')
+        Copy-RepairKit $kit $ig (Join-Path $wsrc 'CortmedEngine.cs') $kcs (Join-Path $wsrc 'guard\sysmon-cortmed.xml') `
+            (Join-Path $root 'engine\rules\behavior_rules.json') $ug $null
+        $need = @('Install-Guard.ps1', 'CortmedEngine.cs', 'behavior_rules.json', 'Uninstall-Guard.ps1', 'guard\sysmon-cortmed.xml',
+            'guard\Core\PathRules.cs', 'guard\Service\GuardEngine.cs')
+        $lack = @($need | Where-Object { -not (Test-Path (Join-Path $kit $_)) })
+        Check 'onarim takimi: -Source icin gereken dosyalar' ($lack.Count -eq 0) ($lack -join ', ')
+        Check 'onarim takimi: eski kaynak silindi' (-not (Test-Path (Join-Path $kit 'guard\Core\Eski.cs'))) ''
+        Check 'onarim takimi: kaynak sayisi depoyla ayni' (@(Get-ChildItem (Join-Path $kit 'guard') -Recurse -Filter *.cs).Count -eq $kcs.Count) ''
+        $ko = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $kit 'Install-Guard.ps1') -Source $kit -WhatIf -SysmonState Absent | Out-String
+        Check 'onarim takimi -Source olarak calisir (-WhatIf)' ($LASTEXITCODE -eq 0 -and $ko -match 'CortmedGuard') $ko
+    } finally { cmd /c rmdir /s /q "$kit" }
+}
+$igText = if (Test-Path $ig) { Get-Content $ig -Raw -Encoding UTF8 } else { '' }
+Check 'Install-Guard: Program Files kaynagi guvenilmezse onarmaz' ($igText -match '\$fromApp -and -not \$appH') ''
+
 $after = DirState
 Check 'Install-Guard -WhatIf hicbir sey olusturmaz' ($before -eq $after) "once: $before / sonra: $after"
 

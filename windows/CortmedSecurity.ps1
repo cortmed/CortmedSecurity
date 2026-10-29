@@ -1029,6 +1029,32 @@ function Get-GuardFindings {
     } catch { }
 }
 
+# Yeni "supheli davranis" (Warn, ozgun seviye sari) bulgulari: anahtar basina bir kez kisa, kalici olmayan bildirim.
+# Gosterilen anahtarlar tepsinin kendi veri klasorunde (data\guard-warn-shown.txt) tutulur; dosya yazilamazsa
+# bu oturumda yine de bir kez gosterilir. $notify: { param($title, $text, $sticky) }. Donus: gosterilen sayisi.
+$GuardWarnShownPath = Join-Path $DataDir 'guard-warn-shown.txt'
+$script:GuardWarnShown = @{}
+function Invoke-GuardWarnNotices([scriptblock]$notify) {
+    try {
+        if ([IO.File]::Exists($GuardWarnShownPath)) {
+            foreach ($l in [IO.File]::ReadAllLines($GuardWarnShownPath, [Text.Encoding]::UTF8)) { if ($l) { $script:GuardWarnShown[$l] = $true } }
+        }
+    } catch { }
+    $n = 0
+    foreach ($f in @(Get-GuardFindings)) {
+        $key = [string]$f.key
+        if ($f.guardLevel -ne 'YELLOW' -or $script:GuardWarnShown.ContainsKey($key)) { continue }
+        $script:GuardWarnShown[$key] = $true
+        try { [IO.File]::AppendAllText($GuardWarnShownPath, "$key`r`n", (New-Object Text.UTF8Encoding($false))) } catch { }
+        $name = if ($f.path) { Split-Path ([string]$f.path) -Leaf } else { [string]$f.title }
+        if ($notify) {
+            & $notify 'Cortmed Security' "Şüpheli davranış: $name. Program durdurulmadı; ayrıntılar Önerilerimiz > Şüpheli davranan programlar bölümünde." $false
+        }
+        $n++
+    }
+    return $n
+}
+
 # Davranis bekcisi durumu. Tepsideki baglanti varsa Sysmon bilgisi ondan, yoksa isaret dosyalari ve hizmetlerden.
 # Panel ayri bir surectir ve boruya baglanmaz (tek istemcili boru tepsinindir); istemcisiz cagirir.
 function Get-GuardStatus($client = $null) {
@@ -1058,6 +1084,33 @@ function Get-GuardCheck($gs) {
     if ($gs.preexisting) { return @{ ok = $false; text = 'Sysmon başka bir ayarla çalışıyor' } }
     if (-not $gs.sysmonOk) { return @{ ok = $false; text = 'Davranış bekçisi tam çalışmıyor' } }
     return @{ ok = $true; text = 'Davranış bekçisi açık' }
+}
+
+# 64 bit Program Files, ortam degiskeni olmadan (Uninstall.ps1 ile ayni yontem): 64 bit islemde [Environment],
+# 32 bit islemde kayit defterindeki ProgramW6432Dir.
+function Get-ProgramFilesDir {
+    $pf = [Environment]::GetFolderPath('ProgramFiles')
+    if (-not [Environment]::Is64BitProcess) {
+        $w6432 = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion' -Name ProgramW6432Dir -ErrorAction SilentlyContinue).ProgramW6432Dir
+        if ($w6432) { $pf = $w6432 }
+    }
+    return $pf
+}
+
+# "Bekciyi ac" dugmesinin yukseltecegi kurulum betigi.
+#   Hizmet varsa (onarim): YALNIZCA Program Files\Cortmed'deki, kullanicinin yazamadigi kopya ve kaynaklari;
+#   o kopya yoksa (eski kurulum) kullanici klasorundeki kopya yukseltilmez, missing = $true.
+#   Hizmet yoksa (ilk kurulum, henuz yonetici kopyasi yok): paketten kurulan $Root kopyasi, paketi calistirmakla ayni.
+function Get-GuardSetupCommand([bool]$serviceExists, [string]$programFiles = (Get-ProgramFilesDir)) {
+    if ($serviceExists) {
+        $app = Join-Path $programFiles 'Cortmed'
+        $script = Join-Path $app 'Install-Guard.ps1'
+        if (Test-Path -LiteralPath $script -PathType Leaf) { return @{ script = $script; source = $app; missing = $false } }
+        return @{ script = $null; source = $null; missing = $true }
+    }
+    $script = Join-Path $Root 'Install-Guard.ps1'
+    if (Test-Path -LiteralPath $script -PathType Leaf) { return @{ script = $script; source = $Root; missing = $false } }
+    return @{ script = $null; source = $null; missing = $true }
 }
 
 # Install-Guard.ps1 cikis koduna gore kullaniciya not (0 ya da bilinmiyorsa not yok)
@@ -1235,6 +1288,10 @@ function Start-Watcher {
                 } catch { Write-Log "Bekci hatasi ($file): $_" }
             }
             $state.ticks++
+            # Bekcinin yeni supheli davranis (Warn) bulgulari: anahtar basina bir kisa bildirim
+            if ($state.ticks % 5 -eq 0) {
+                try { [void](Invoke-GuardWarnNotices $guardNotify) } catch { Write-Log "Bekci uyari bildirimi hatasi: $_" }
+            }
             if ($state.ticks % 30 -eq 0) { & $updateTray }
             if (((Get-Date) - $state.lastDaily).TotalHours -ge 24) {
                 $state.lastDaily = Get-Date
@@ -1392,6 +1449,16 @@ function Set-FindingItems($list, $findings) {
 
 # Dosya raporu penceresi. Kullanici dosyaya guvenirse $true dondurur.
 function Show-Report($owner, $finding) {
+    # Dugme olaylari ShowDialog sirasinda bu kapsamda calisir: $f, $finding ve $result burada tanimli olmali
+    $f = New-ReportForm $finding
+    $result = $f.Tag
+    [void]$f.ShowDialog($owner)
+    return $result.trusted
+}
+
+# Ayrintilar penceresini kurar, gostermez (dugmeler Show-Report kapsaminda calisir). Tag.trusted: kullanici
+# "bu dosyaya guveniyorum" dedi.
+function New-ReportForm($finding) {
     $levelKey = if ($UiLevel.ContainsKey([string]$finding.level)) { [string]$finding.level } else { 'NONE' }
     $f = New-DarkForm 'Cortmed Security - Ayrıntılar' 760 560
     $head = New-Object Windows.Forms.Label
@@ -1410,10 +1477,28 @@ function Show-Report($owner, $finding) {
     $bar = New-Object Windows.Forms.FlowLayoutPanel
     $bar.Dock = 'Bottom'; $bar.Height = 62; $bar.Padding = New-Object Windows.Forms.Padding(16, 10, 16, 10); $bar.BackColor = $UiBg
     $result = @{ trusted = $false }
+    $f.Tag = $result
     if ($finding.path -and (Test-Path -LiteralPath $finding.path)) {
         $open = New-FlatButton 'Dosyanın klasörünü aç'
         $open.Add_Click({ Start-Process explorer.exe "/select,`"$($finding.path)`"" })
         [void]$bar.Controls.Add($open)
+    }
+    # Davranis bekcisi bulgusu (durdurulmayan ya da kapatilan program): dosyayi mevcut karantina islemiyle kaldir
+    if ([string]$finding.key -like 'behavior:*' -and $finding.path -and (Test-Path -LiteralPath $finding.path -PathType Leaf)) {
+        $quar = New-FlatButton 'Karantinaya al'
+        $quar.Add_Click({
+            $a = [Windows.Forms.MessageBox]::Show(
+                "Dosya, açılamayacağı Karantina klasörüne taşınacak:`n`n$($finding.path)`n`nProgram hâlâ çalışıyorsa önce kapatın. Devam edilsin mi?",
+                'Karantinaya al', 'YesNo', 'Question')
+            if ($a -ne 'Yes') { return }
+            if (Invoke-Quarantine ([string]$finding.path)) {
+                [Windows.Forms.MessageBox]::Show('Dosya karantinaya alındı.', 'Cortmed Security') | Out-Null
+                $f.Close()
+            } else {
+                [Windows.Forms.MessageBox]::Show('Dosya karantinaya alınamadı. Program hâlâ çalışıyor olabilir; bilgisayarı yeniden başlatıp tekrar deneyin.', 'Cortmed Security') | Out-Null
+            }
+        })
+        [void]$bar.Controls.Add($quar)
     }
     if ([string]$finding.key -like 'file:*' -and $finding.level -in 'RED', 'YELLOW') {
         $trust = New-FlatButton 'Bu dosyaya güveniyorum'
@@ -1430,8 +1515,7 @@ function Show-Report($owner, $finding) {
     [void]$bar.Controls.Add($close)
     $f.Controls.AddRange(@($wrap, $bar, $head))
     $box.Select(0, 0)
-    [void]$f.ShowDialog($owner)
-    return $result.trusted
+    return $f
 }
 
 function Show-FindingList($owner, [string]$title, $findings) {
@@ -1458,7 +1542,7 @@ function Show-FindingList($owner, [string]$title, $findings) {
 # connected/connectedAt/resent: yeniden baglantidan sonra hizmetin yeniden gondermedigi sorulari bulmak icin.
 function New-GuardState {
     return @{ open = @{}; answered = @{}; gone = @{}; firstSeen = @{}; reminded = @{}; prompts = @{}
-        connected = $false; connectedAt = $null; reconciled = $true; resent = @{} }
+        connected = $false; connectedAt = $null; reconciled = $true; resent = @{}; killPaths = @{} }
 }
 
 # "Bu program durdurulsun mu" penceresini kurar, gostermez.
@@ -1473,7 +1557,7 @@ function New-GuardPromptForm($prompt, [scriptblock]$answer, $state = $null) {
     $f = New-DarkForm "Cortmed şüpheli bir programı durdurdu: $name" 640 500
     $f.StartPosition = 'CenterScreen'; $f.TopMost = $true
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
-    $f.Tag = @{ id = [string]$prompt.id; answer = $answer; state = $state; decision = $null; result = $null }
+    $f.Tag = @{ id = [string]$prompt.id; path = [string]$prompt.path; answer = $answer; state = $state; decision = $null; result = $null }
 
     $head = New-Object Windows.Forms.Label
     $head.Dock = 'Top'; $head.Height = 54; $head.Padding = New-Object Windows.Forms.Padding(16, 0, 0, 0)
@@ -1507,6 +1591,8 @@ function New-GuardPromptForm($prompt, [scriptblock]$answer, $state = $null) {
         $t.decision = [string]$sender.Tag; $t.result = $r
         # Karar saklanir: soru yeniden gelirse (cevap yolda kaybolduysa) ayni karar yeniden gonderilir
         if ($t.state) { $t.state.answered[$t.id] = $t.decision; $t.state.open.Remove($t.id); $t.state.prompts.Remove($t.id) }
+        # Kapatma: hizmet "result ok=true" derse (program kapatildi) dosya ayara gore karantinaya alinir
+        if ($t.state -and $t.state.killPaths -ne $null -and $t.decision -eq 'kill' -and $t.path) { $t.state.killPaths[$t.id] = $t.path }
         $form.Close()
     }
     $kill = New-FlatButton 'Programı kapat (önerilen)' $true
@@ -1543,8 +1629,16 @@ function Close-GuardPrompt($state, [string]$id, [scriptblock]$notify) {
 # Hizmetten gelen satiri "type" alanina gore isler:
 #   ask: ayni kimlige ikinci pencere yok; daha once cevaplanan kimlik icin saklanan karar yeniden gonderilir
 #   withdraw / result ok=false: soru artik yok; result ok=true: cevap ulasti; diger turler yok sayilir
+#   result ok=true bir "kapat" cevabinin sonucuysa sorunun dosyasi $Quarantine'e verilir (varsayilan: otomatik
+#   karantina ayari aciksa mevcut Invoke-Quarantine).
 # Kurulan pencereyi dondurur (gosterilmezse -NoShow), aksi halde $null.
-function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [scriptblock]$Notify = $null, $Now = $null, [switch]$NoShow) {
+$DefaultGuardQuarantine = {
+    param($path)
+    if ((Get-Config).autoQuarantine -eq $true -and $path -and (Test-Path -LiteralPath $path -PathType Leaf)) { return (Invoke-Quarantine $path) }
+    return $false
+}
+function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [scriptblock]$Notify = $null, $Now = $null, [switch]$NoShow,
+    [scriptblock]$Quarantine = $null) {
     if (-not $Now) { $Now = Get-Date }
     $p = $null
     try { $p = $json | ConvertFrom-Json } catch { return $null }
@@ -1567,7 +1661,19 @@ function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [scrip
         }
         'withdraw' { Close-GuardPrompt $state $id $Notify; return $null }
         'result' {
-            if ($p.ok -eq $true) { $state.firstSeen.Remove($id); $state.prompts.Remove($id) }
+            $killPath = $null
+            if ($state.killPaths -ne $null -and $state.killPaths.ContainsKey($id)) { $killPath = $state.killPaths[$id]; $state.killPaths.Remove($id) }
+            if ($p.ok -eq $true) {
+                $state.firstSeen.Remove($id); $state.prompts.Remove($id)
+                if ($killPath) {
+                    $q = if ($Quarantine) { $Quarantine } else { $DefaultGuardQuarantine }
+                    $done = $false
+                    try { $r = & $q $killPath; if ($r -is [array]) { $r = $r[-1] }; $done = ($r -is [bool]) -and $r } catch { }
+                    if ($done -and $Notify) {
+                        & $Notify 'Cortmed Security' "Program kapatıldı ve dosyası karantinaya alındı: $(Split-Path $killPath -Leaf)" $false
+                    }
+                }
+            }
             else { Close-GuardPrompt $state $id $Notify }
             return $null
         }
@@ -1750,9 +1856,15 @@ $AdviceCategories = @(
         icon = '📄'; title = 'Tanınmayan programlar'
         text = '{0} programın üreticisi doğrulanamıyor. Tanıdığınız programlarsa bir şey yapmanıza gerek yok.'
         button = 'Listeyi göster' }
-    @{ id = 'guard-history'; prefixes = @('behavior')
+    # Davranis bekcisi bulgulari ozgun seviyeye (guardLevel) gore: sari = supheli ama durdurulmadi (50-79 ya da
+    # dondurulamadi), kirmizi = kullanici "Programi kapat" dedi
+    @{ id = 'guard-warn'; prefixes = @('behavior'); guardLevel = 'YELLOW'
+        icon = '⚠'; title = 'Şüpheli davranan programlar'
+        text = 'Bu programlar şüpheli bir şey yaptı ama durdurulmadı. Tanımıyorsanız listeden açıp ''Karantinaya al'' ile kaldırın.'
+        button = 'Listeyi göster' }
+    @{ id = 'guard-history'; prefixes = @('behavior'); guardLevel = 'RED'
         icon = '🛑'; title = 'Durdurulan programlar'
-        text = 'Cortmed bu programları durdurdu. Kapatmayı seçtiyseniz bir şey yapmanıza gerek yok.'
+        text = 'Cortmed bu programları durdurdu ve sizin onayınızla kapattı. Dosyaları hâlâ bilgisayarınızda; tanımıyorsanız listeden açıp ''Karantinaya al'' ile kaldırın.'
         button = 'Listeyi göster' }
 )
 
@@ -1770,7 +1882,8 @@ function Get-AdviceGroups($advice, [bool]$guardMissing = $false, [string]$guardH
     }
     $used = @{}
     foreach ($c in $AdviceCategories) {
-        $items = @($advice | Where-Object { ($_.key -split ':')[0] -in $c.prefixes })
+        $items = @($advice | Where-Object { ($_.key -split ':')[0] -in $c.prefixes -and
+                (-not $c.guardLevel -or ($_.PSObject.Properties['guardLevel'] -and $_.guardLevel -eq $c.guardLevel)) })
         foreach ($i in $items) { $used[$i.key] = $true }
         if ($items) { $groups += [pscustomobject]@{ cat = $c; items = $items } }
     }
@@ -1987,11 +2100,13 @@ function Show-Panel {
                 } catch { }
             }
             'guard' {
-                $setup = Join-Path $Root 'Install-Guard.ps1'
-                if (-not (Test-Path $setup)) {
-                    [Windows.Forms.MessageBox]::Show('Davranış bekçisinin kurulum dosyaları bulunamadı. Cortmed Security''yi yeniden kurup tekrar deneyin.', 'Cortmed Security') | Out-Null
+                $svcExists = [bool](Get-Service CortmedGuard -ErrorAction SilentlyContinue)
+                $cmdInfo = Get-GuardSetupCommand $svcExists
+                if ($cmdInfo.missing) {
+                    [Windows.Forms.MessageBox]::Show('Davranış bekçisinin kurulum dosyaları bulunamadı. Cortmed Security''yi indirdiğiniz paketten yeniden kurup tekrar deneyin.', 'Cortmed Security') | Out-Null
                     return
                 }
+                $setup = $cmdInfo.script
                 $a = [Windows.Forms.MessageBox]::Show(
                     "Davranış bekçisi açılacak. Şüpheli davranan bir programı çalışırken durdurur ve ne yapılacağını size sorar.`n`nWindows bir onay penceresi gösterecek. Devam edilsin mi?",
                     'Davranış bekçisini açın', 'YesNo', 'Question')
@@ -2001,7 +2116,7 @@ function Show-Panel {
                 $psDir = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) { Join-Path $env:windir 'Sysnative' } else { [Environment]::SystemDirectory }
                 try {
                     $proc = Start-Process (Join-Path $psDir 'WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
-                        '-File', ('"{0}"' -f $setup), '-Source', ('"{0}"' -f $Root), '-Elevated')
+                        '-File', ('"{0}"' -f $setup), '-Source', ('"{0}"' -f $cmdInfo.source), '-Elevated')
                     # Tutamac hemen alinir; yoksa surec bitince ExitCode okunamaz
                     if ($proc) { $null = $proc.Handle; $state.guardSetup = $proc }
                 } catch { }

@@ -578,7 +578,7 @@ namespace Cortmed.Guard
                         _control.KillTree(live);
                         _log.Write("Kullanıcı kapatmayı seçti: " + p.Prompt.Path + " (kapatılan " + string.Join(",", live) + ")");
                         RecordFinding("RED", p.Prompt.Path, p.Hash, p.Prompt.Publisher ?? "", p.Prompt.Score, p.Prompt.Reasons,
-                            "Program sizin onayınızla kapatıldı. Dosyaya dokunulmadı.");
+                            "Program kapatıldı. Dosyası hâlâ bilgisayarınızda; tanımıyorsanız 'Karantinaya al' ile kaldırın.");
                     }
                     else
                     {
@@ -674,7 +674,7 @@ namespace Cortmed.Guard
                 f["key"] = hash.Length > 0 ? "behavior:" + hash : "behavior:path:" + image.ToLowerInvariant();
                 f["level"] = level;
                 f["title"] = (level == "RED" ? "Durdurulan program: " : "Şüpheli davranış: ") + name;
-                f["detail"] = string.Join(" ", reasons) + (level == "RED" ? "" : " " + note);
+                f["detail"] = string.Join(" ", reasons) + " " + note;
                 f["path"] = image;
                 f["tab"] = "threat";
                 f["report"] = report.ToString();
