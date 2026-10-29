@@ -405,6 +405,66 @@ public static class GuardTests
         }
     }
 
+    // ---- ProcessControl ----
+
+    static bool AllThreadsSuspended(System.Diagnostics.Process p)
+    {
+        p.Refresh();
+        if (p.Threads.Count == 0) return false;
+        foreach (System.Diagnostics.ProcessThread t in p.Threads)
+        {
+            if (t.ThreadState != System.Diagnostics.ThreadState.Wait ||
+                t.WaitReason != System.Diagnostics.ThreadWaitReason.Suspended) return false;
+        }
+        return true;
+    }
+
+    static bool WaitSuspended(System.Diagnostics.Process p, bool expected)
+    {
+        for (int i = 0; i < 40; i++)
+        {
+            if (AllThreadsSuspended(p) == expected) return true;
+            System.Threading.Thread.Sleep(25);
+        }
+        return false;
+    }
+
+    [Test] static void FreezeAndResumeChildProcess()
+    {
+        var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command Start-Sleep 30") { CreateNoWindow = true, UseShellExecute = false });
+        try
+        {
+            System.Threading.Thread.Sleep(1500);
+            var frozen = ProcessControl.FreezeTree(new List<int> { p.Id }, Rules());
+            Assert(frozen.Count == 1, "dondurulamadi");
+            Assert(WaitSuspended(p, true), "thread'ler askida degil");
+            ProcessControl.ResumeTree(frozen);
+            Assert(WaitSuspended(p, false), "devam etmedi");
+            ProcessControl.KillTree(frozen);
+            Assert(p.WaitForExit(5000), "kapanmadi");
+        }
+        finally
+        {
+            try { if (!p.HasExited) p.Kill(); } catch { }
+        }
+    }
+
+    [Test] static void ExplorerAndLsassAreNeverFrozen()
+    {
+        int checkedCount = 0;
+        foreach (var name in new[] { "explorer", "lsass" })
+        {
+            foreach (var pr in System.Diagnostics.Process.GetProcessesByName(name))
+            {
+                Assert(!ProcessControl.CanFreeze(pr.Id, Rules()), name + " dondurulabilir sayildi");
+                checkedCount++;
+            }
+        }
+        Assert(checkedCount > 0, "explorer/lsass bulunamadi");
+        Assert(!ProcessControl.CanFreeze(0, Rules()) && !ProcessControl.CanFreeze(4, Rules()), "pid 0/4");
+        Assert(!ProcessControl.CanFreeze(System.Diagnostics.Process.GetCurrentProcess().Id, Rules()), "kendi sureci");
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
