@@ -280,7 +280,22 @@ async function backgroundLogic(L, assertEq) {
   assertEq('dl red reasons', [red.message.indexOf('bir') >= 0, red.message.indexOf('iki') >= 0, red.message.indexOf('üç') >= 0], [true, true, false]);
   assertEq('dl red level', red.level, 'RED');
   const yel = L.downloadNotice('/home/a/b.zip', { level: 'YELLOW', reasons: ['imzasız'] });
-  assertEq('dl yellow', [yel.title, yel.message.indexOf('imzasız') >= 0], ['b.zip şüpheli görünüyor', true]);
+  assertEq('dl yellow fallback title', [yel.title, yel.message.indexOf('imzasız') >= 0], ['b.zip şüpheli görünüyor', true]);
+  // Kirmizi ve sari bildirimin sonunda panel notu; temizde yok
+  const MORE = 'Ayrıntılar için Cortmed panelini açın.';
+  function endsMore(n) { return n.message.slice(-MORE.length) === MORE; }
+  assertEq('dl red ends with panel note', endsMore(red), true);
+  assertEq('dl red empty reasons panel note', L.downloadNotice(p, { level: 'RED', reasons: [] }).message, 'Bu dosyayı açmayın.\n' + MORE);
+  assertEq('dl yellow ends with panel note', endsMore(yel), true);
+  assertEq('dl ok no panel note', L.downloadNotice(p, { level: 'OK', reasons: [] }).message.indexOf(MORE), -1);
+  // Sari: kopru basligi kullanilir (imzasiz program "şüpheli" denmez), temizlenir ve 80 karakterle sinirlanir
+  const uns = L.downloadNotice(p, { level: 'YELLOW', title: 'Tanınmayan program: imzasiz.exe', reasons: ['İmzasız'] });
+  assertEq('dl yellow uses host title', uns.title, 'Tanınmayan program: imzasiz.exe');
+  assertEq('dl yellow title strips bidi', L.downloadNotice(p, { level: 'YELLOW', title: 'Tanınmayan program: fatura\u202Efdp.exe\u0007' }).title, 'Tanınmayan program: faturafdp.exe');
+  const lyt = L.downloadNotice(p, { level: 'YELLOW', title: 'Tanınmayan program: ' + 'y'.repeat(150) + '.exe' }).title;
+  assertEq('dl yellow title capped 80, end kept', [lyt.length, /\.exe$/.test(lyt), lyt.indexOf('…') > 0], [80, true, true]);
+  assertEq('dl yellow blank title fallback', L.downloadNotice(p, { level: 'YELLOW', title: ' \u202E ' }).title, 'kurulum.exe şüpheli görünüyor');
+  assertEq('dl yellow non-string title fallback', L.downloadNotice(p, { level: 'YELLOW', title: 5 }).title, 'kurulum.exe şüpheli görünüyor');
   assertEq('dl error', L.downloadNotice(p, { level: 'ERROR', reasons: [] }), null);
   assertEq('dl garbage', L.downloadNotice(p, null), null);
   assertEq('dl unknown level', L.downloadNotice(p, { level: 'PURPLE' }), null);
@@ -296,7 +311,10 @@ async function backgroundLogic(L, assertEq) {
 
   // Kopru sonucu: yalnizca lastError "kurulu degil" der; ERROR/bos cevap gorunur bir sey yapmaz
   assertEq('outcome lastError', L.downloadOutcome({ message: 'Specified native messaging host not found.' }, undefined, p), { hostMissing: true, notice: null });
-  assertEq('outcome ERROR silent', L.downloadOutcome(undefined, { level: 'ERROR', reasons: ['x'] }, p), { notice: null });
+  assertEq('outcome ERROR silent, host present', L.downloadOutcome(undefined, { level: 'ERROR', reasons: ['x'] }, p), { hostMissing: false, notice: null });
+  // Nabiz: {path:''} kopruye gider; kopru lastseen yazar ve ERROR doner. Herhangi bir cevap "kurulu" demektir.
+  assertEq('heartbeat ERROR reply clears hostMissing', L.downloadOutcome(undefined, { level: 'ERROR', title: 'Geçersiz yol', reasons: [] }, ''), { hostMissing: false, notice: null });
+  assertEq('heartbeat lastError sets hostMissing', L.downloadOutcome({ message: 'Specified native messaging host not found.' }, undefined, ''), { hostMissing: true, notice: null });
   assertEq('outcome empty silent', L.downloadOutcome(undefined, undefined, p), { notice: null });
   assertEq('outcome non-object silent', L.downloadOutcome(undefined, 'OK', p), { notice: null });
   const okOut = L.downloadOutcome(undefined, { level: 'OK', reasons: [] }, p);
@@ -481,6 +499,9 @@ async function extensionFiles(L, assertEq) {
   const cjs = await (await fetch('../extension/content.js')).text();
   assertEq('content.js independent of core', cjs.indexOf('CortmedLib'), -1);
   assertEq('background uses router', bg.indexOf('L.routeMessage(') >= 0 && bg.indexOf('L.downloadOutcome(') >= 0, true);
+  // Nabiz: tarayici acilisinda ve kurulumda kopruye bos yol gider (panel durumu icin)
+  assertEq('background heartbeat on startup/installed', [bg.indexOf('chrome.runtime.onStartup.addListener(') >= 0,
+    bg.indexOf('chrome.runtime.onInstalled.addListener(') >= 0, bg.indexOf("{ path: '' }") >= 0], [true, true, true]);
   const popup = await (await fetch('../extension/popup.html')).text();
   for (const s of ['Cortmed Tarayıcı Koruması', 'Hesaplarım', 'Şifreleriniz bilgisayarınızdan çıkmaz.']) {
     assertEq('popup text ' + s, popup.indexOf(s) >= 0, true);

@@ -252,19 +252,26 @@
     return 'unknown';
   }
 
-  // Dosya adi: yon/denetim karakterleri atilir (uzanti sahteciligi), 60 karakterle sinirlanir; uzanti gorunur kalir.
+  // Yon/denetim karakterleri atilir (uzanti sahteciligi); uzunsa ortadan kirpilir, son 19 karakter (uzanti) gorunur kalir.
+  function cleanText(text, max) {
+    let f = String(text || '').replace(/[\u0000-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]/g, '');
+    if (f.length > max) f = f.slice(0, max - 20) + '…' + f.slice(-19);
+    return f;
+  }
+
+  // Dosya adi: en fazla 60 karakter.
   function baseName(path) {
     const p = String(path || '').split(/[\\/]/);
-    let f = (p[p.length - 1] || String(path || ''))
-      .replace(/[\u0000-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]/g, '');
-    if (f.length > 60) f = f.slice(0, 40) + '…' + f.slice(-19);
-    return f;
+    return cleanText(p[p.length - 1] || String(path || ''), 60);
   }
 
   function reasonText(res, max) {
     const r = Array.isArray(res.reasons) ? res.reasons : [];
     return r.slice(0, max).map(function (x) { return String(x).slice(0, 200); }).join('\n');
   }
+
+  // Kirmizi ve sari bildirimin sonu: kopru komut almadigi icin dugme yok, panele yonlendirilir.
+  const PANEL_NOTE = 'Ayrıntılar için Cortmed panelini açın.';
 
   // Kopru cevabindan bildirim metni; ERROR ya da bozuk cevapta null.
   function downloadNotice(path, res) {
@@ -274,19 +281,22 @@
       return { level: 'OK', title: '✓ ' + f + ' temiz görünüyor', message: 'Cortmed Security bu dosyada bir sorun bulmadı.' };
     }
     if (res.level === 'RED') {
-      return { level: 'RED', title: '⚠ ' + f + ' tehlikeli olabilir', message: reasonText(res, 2) || 'Bu dosyayı açmayın.' };
+      return { level: 'RED', title: '⚠ ' + f + ' tehlikeli olabilir', message: (reasonText(res, 2) || 'Bu dosyayı açmayın.') + '\n' + PANEL_NOTE };
     }
     if (res.level === 'YELLOW') {
-      return { level: 'YELLOW', title: f + ' şüpheli görünüyor', message: reasonText(res, 3) || 'Açmadan önce emin olun.' };
+      // Taramanin kendi basligi derecelidir ("Tanınmayan program: ..."); imzasiz her dosyaya "şüpheli" denmez.
+      const t = typeof res.title === 'string' ? cleanText(res.title, 80).trim() : '';
+      return { level: 'YELLOW', title: t || f + ' şüpheli görünüyor', message: (reasonText(res, 3) || 'Açmadan önce emin olun.') + '\n' + PANEL_NOTE };
     }
     return null;
   }
 
-  // Kopru cevabinin sonucu: yalnizca baglanti hatasi (lastError) "kurulu degil" demektir.
-  // ERROR ya da bos cevap gorunur hicbir sey degistirmez.
+  // Kopru cevabinin sonucu: baglanti hatasi (lastError) "kurulu degil", herhangi bir cevap (ERROR dahil) "kurulu" demektir.
+  // ERROR ya da bos cevapta bildirim yok.
   function downloadOutcome(lastError, res, path) {
     if (lastError) return { hostMissing: true, notice: null };
-    if (!res || typeof res !== 'object' || res.level === 'ERROR') return { notice: null };
+    if (!res || typeof res !== 'object') return { notice: null };
+    if (res.level === 'ERROR') return { hostMissing: false, notice: null };
     return { hostMissing: false, notice: downloadNotice(path, res) };
   }
 

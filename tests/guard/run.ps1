@@ -714,6 +714,10 @@ switch ($Kind) {
         $r = Invoke-BrowserHost $hExe (StubArgs $d1 'ok') (PathFrame (Join-Path $hTmp 'yok.exe'))
         Check 'kopru: olmayan dosya -> ERROR' (Test-HostError $r $tMiss) (HostWhy $r)
         Check 'kopru: hatali yolda da browser-lastseen.txt yazilir' (Test-Path (Join-Path $d1 'browser-lastseen.txt')) ''
+        # Eklenti nabzi {path:''}: kopru lastseen yazar, sonra ERROR doner (panel "acik" gosterebilsin)
+        $d1e = Join-Path $hTmp 'data-heartbeat'
+        $r = Invoke-BrowserHost $hExe (StubArgs $d1e 'ok') (PathFrame '')
+        Check 'kopru: bos yol (eklenti nabzi) -> ERROR ve browser-lastseen.txt yazilir' ((Test-HostError $r @($tBad, $tOut)) -and (Test-Path (Join-Path $d1e 'browser-lastseen.txt'))) (HostWhy $r)
 
         $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd2') 'ok') (PathFrame 'C:\Windows\notepad.exe')
         Check 'kopru: profil disi (notepad.exe) -> ERROR' (Test-HostError $r $tOut) (HostWhy $r)

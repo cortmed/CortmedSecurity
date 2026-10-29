@@ -72,10 +72,26 @@ importScripts('lib/core.js');
       const path = item.filename;
       chrome.runtime.sendNativeMessage(HOST, { path: path }, function (res) {
         const out = L.downloadOutcome(chrome.runtime.lastError, res, path);
-        if (out.hostMissing === true) chrome.storage.local.set({ hostMissing: true });
-        else if (out.hostMissing === false) chrome.storage.local.set({ hostMissing: false, hostSeen: Date.now() });
+        hostState(out);
         if (out.notice) notify(out.notice);
       });
     });
   });
+
+  function hostState(out) {
+    if (out.hostMissing === true) chrome.storage.local.set({ hostMissing: true });
+    else if (out.hostMissing === false) chrome.storage.local.set({ hostMissing: false, hostSeen: Date.now() });
+  }
+
+  // ---------- Nabiz ----------
+  // Bos yol: kopru browser-lastseen.txt yazar, sonra ERROR doner (yok sayilir). Panel ve acilir pencere durumu icin.
+  function heartbeat() {
+    try {
+      chrome.runtime.sendNativeMessage(HOST, { path: '' }, function (res) {
+        hostState(L.downloadOutcome(chrome.runtime.lastError, res, ''));
+      });
+    } catch (e) { /* sessiz */ }
+  }
+  chrome.runtime.onStartup.addListener(heartbeat);
+  chrome.runtime.onInstalled.addListener(heartbeat);
 })();
