@@ -2411,7 +2411,8 @@ function Show-Panel {
             $state.line = 'Cortmed ilk taramayı birkaç dakika içinde kendiliğinden yapacak.'
         } else {
             if ($sum.reds) { $state.level = 'RED'; $state.symbol = 'cross'; $state.title = 'Tehlike bulundu' }
-            elseif ($threats -or $groups) { $state.level = 'YELLOW'; $state.symbol = 'alert'; $state.title = 'Bakmanız gereken bir şey var' }
+            # Oneriler kalkani sarartmaz; yalnizca tehditler sarartir (kullanici guvende hissetmeli)
+            elseif ($threats) { $state.level = 'YELLOW'; $state.symbol = 'alert'; $state.title = 'Bakmanız gereken bir şey var' }
             else { $state.level = 'OK'; $state.symbol = 'check'; $state.title = 'Bilgisayarınız korunuyor' }
             $state.line = 'Son tarama: {0}  ·  Veritabanı: {1}' -f (Get-RelativeTime $sum.time), $sigs
         }
