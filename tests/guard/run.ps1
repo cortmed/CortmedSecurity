@@ -312,5 +312,52 @@ $trayOut | ForEach-Object { Write-Host $_ }
 $trayFailLines = @($trayOut | Where-Object { $_ -like 'FAIL *' }).Count
 Check 'tepsi testleri (tray-tests.ps1)' ($trayCode -eq 0 -and $trayFailLines -eq 0 -and @($trayOut | Where-Object { $_ -like 'PASS *' }).Count -gt 0) "kod $trayCode, $trayFailLines FAIL"
 
+# --- Zararsiz davranis deneme programi (yalnizca derlenir, ASLA calistirilmaz) ve replay dogrulamasi ---
+$btBuild = Join-Path $root 'windows\guard\Test\build-test.ps1'
+$btTmp = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-bt-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force $btTmp | Out-Null
+try {
+    $btExe = Join-Path $btTmp 'CortmedBehaviorTest.exe'
+    $btOut = ''
+    if (Test-Path $btBuild) { $btOut = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $btBuild -OutDir $btTmp | Out-String }
+    Check 'CortmedBehaviorTest.cs derlenir (calistirilmaz)' ((Test-Path $btBuild) -and ($LASTEXITCODE -eq 0) -and (Test-Path $btExe)) $btOut
+    $btSrc = Join-Path $root 'windows\guard\Test\CortmedBehaviorTest.cs'
+    $btTxt = if (Test-Path $btSrc) { Get-Content $btSrc -Raw -Encoding UTF8 } else { '' }
+    Check 'deneme programi gercek Discord klasorune dokunmaz' ($btTxt -notmatch 'LocalApplicationData|%LOCALAPPDATA%|\\Discord\\' -and $btTxt -match 'CortmedFakeDiscord') ''
+    $mpk = Get-Content (Join-Path $root 'make-windows-package.ps1') -Raw -Encoding UTF8
+    Check 'paket betigi deneme programini icermez' ($mpk -notmatch 'CortmedBehaviorTest|guard\\Test') ''
+
+    # Replay: derlenmis bekci ile sahte olaylar -> Freeze, tam iki neden, puan >= 80
+    $rgExe = Join-Path $btTmp 'CortmedGuard.exe'
+    $rgSrc = @(Get-ChildItem (Join-Path $root 'windows\guard\Core'), (Join-Path $root 'windows\guard\Service') -Filter *.cs | ForEach-Object FullName) + (Join-Path $root 'windows\CortmedEngine.cs')
+    $rgArgs = @('/nologo', '/target:exe', '/platform:anycpu', '/codepage:65001', "/out:$rgExe") + ($refs | ForEach-Object { "/reference:$_" }) + $rgSrc
+    & $gcsc @rgArgs | Out-Null
+    Check 'replay icin CortmedGuard.exe derlendi' (($LASTEXITCODE -eq 0) -and (Test-Path $rgExe)) ''
+    if (Test-Path $rgExe) {
+        $rgData = Join-Path $btTmp 'data'
+        New-Item -ItemType Directory -Force $rgData | Out-Null
+        $prevEnc = [Console]::OutputEncoding
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $rgOut = @(& $rgExe --replay (Join-Path $root 'tests\guard\fixtures\behavior-test') --rules (Join-Path $root 'engine\rules\behavior_rules.json') --data $rgData | ForEach-Object { "$_" })
+        $rgCode = $LASTEXITCODE
+        [Console]::OutputEncoding = $prevEnc
+        $fz = @($rgOut | Where-Object { $_ -like 'Freeze *' })
+        Check 'replay cikis kodu 0' ($rgCode -eq 0) "kod $rgCode"
+        Check 'replay tam bir Freeze karari verir' ($fz.Count -eq 1) ($rgOut -join ' / ')
+        if ($fz.Count -eq 1) {
+            $line = $fz[0]
+            $score = if ($line -match 'puan=(\d+)') { [int]$Matches[1] } else { -1 }
+            $reasons = @(($line -split ' \| ', 2)[1] -split '; ')
+            Check 'replay puan >= 80' ($score -ge 80) $line
+            Check 'replay tam iki neden' ($reasons.Count -eq 2) $line
+            $c = @{ a = [char]0xE7; i = [char]0x131; s = [char]0x15F; g = [char]0x11F; B = [char]0x15E; o = [char]0xF6; u = [char]0xFC }
+            $want1 = "Kendini a$($c.a)$($c.i)l$($c.i)$($c.s)a eklemeye $($c.a)al$($c.i)$($c.s)t$($c.i)."
+            $want2 = "Ba$($c.s)ka bir program$($c.i)n (Discord/taray$($c.i)c$($c.i)) dosyalar$($c.i)n$($c.i) de$($c.g)i$($c.s)tirmeye $($c.a)al$($c.i)$($c.s)t$($c.i)."
+            Check 'replay nedeni: Persistence' ($reasons.Count -ge 1 -and $reasons[0] -eq $want1) $line
+            Check 'replay nedeni: TamperOtherApp' ($reasons.Count -eq 2 -and $reasons[1] -eq $want2) $line
+        }
+    }
+} finally { Remove-Item $btTmp -Recurse -Force -ErrorAction SilentlyContinue }
+
 if ($fails -gt 0) { Write-Host "FAIL: $fails ek kontrol basarisiz"; exit 1 }
 exit $exeCode

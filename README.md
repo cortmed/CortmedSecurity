@@ -117,6 +117,31 @@ Antivirüslerdeki EICAR mantığı: bu dosyalar zararsızdır ama Cortmed verita
 - **Android:** `test/cortmed-test-virus.apk` ("Kargo Takip (Cortmed Test)") kur ve Cortmed'de *Şimdi Tara*'ya bas. Kırmızı uyarı gelmeli. Sonra test uygulamasını kaldır.
 - **Windows:** `cortmed-test-dosyasi.txt` dosyasını kopyalayıp İndirilenler'e `deneme.exe` adıyla yapıştır. Birkaç saniye içinde uyarı gelmeli (dosyaya dokunulmaz, testten sonra kendin sil). Test dosyası kurulum paketinde yok, `test/` klasöründe duruyor.
 
+### Davranış bekçisini deneme
+
+Davranış bekçisi (CortmedGuard), kötü huylu bir programı çalışırken yakalar. Aşağıdaki zararsız program iki kötü huyu taklit eder:
+kendini açılışa eklemeyi ve sahte bir Discord dosyasını değiştirmeyi. Gerçek Discord'a ya da başka bir programa dokunmaz.
+Bu program kurulum paketinde yok; kendiniz derlersiniz.
+
+1. Programı derleyin: `powershell -ExecutionPolicy Bypass -File windows\guard\Test\build-test.ps1`
+   Sonuç: `%LOCALAPPDATA%\CortmedBuild\test\CortmedBehaviorTest.exe`
+2. `CortmedBehaviorTest.exe` dosyasını **İndirilenler** ya da **Masaüstü** klasörüne kopyalayın.
+   Temp ya da `%LOCALAPPDATA%` içinden çalıştırmayın: bekçi bu klasörlerdeki programlara kendi klasörü gibi davranır ve uyarmayabilir.
+3. Kopyaladığınız programa çift tıklayın. **5 saniye içinde** bir soru penceresi çıkmalı ve iki neden yazmalı:
+   - Kendini açılışa eklemeye çalıştı.
+   - Başka bir programın (Discord/tarayıcı) dosyalarını değiştirmeye çalıştı.
+4. **Programı kapat**'ı seçin. Program kapanmalı. Panelin **Tehditler** sekmesinde bir bulgu görünmeli.
+5. Program temizlik yapamadan kapandığı için izleri elle silin: `CortmedBehaviorTest.exe --cleanup`
+   (Açılıştaki `CortmedTest` değerini ve Temp altındaki `CortmedFakeDiscord` klasörünü siler.)
+
+**Yanlış alarm denemesi:** Discord, Steam ve Chrome'u kurun ya da güncelleyin. `C:\ProgramData\Cortmed\guard.log` içinde
+"Ağaç donduruldu" (Freeze) satırı **olmamalı**.
+
+**Performans denemesi:** 10 dakika normal kullanımdan sonra `Get-Process CortmedGuard` çalıştırın.
+Ortalama işlemci kullanımı %1'in altında, bellek (çalışma kümesi) 80 MB'ın altında olmalı.
+
+Otomatik kontrol: `tests\guard\run.ps1`, aynı olayları bekçiye sahte olarak oynatır ve dondurma kararını doğrular (programı çalıştırmaz).
+
 ---
 
 ## 🛠️ Geliştirici notları
