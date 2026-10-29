@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cortmed Davranis Bekcisi icin Sysmon ayari: yalnizca asagidaki olaylar acik, geri kalan her sey kapali (onmatch="include"). -->
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+    <!-- Olay 1: surec olusturma, hepsi -->
+    <RuleGroup name="ProcessCreate" groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <Image condition="contains">\</Image>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- Olay 5: surec sonlanma, filtresiz (surec agaci cikislara ihtiyac duyar) -->
+    <RuleGroup name="ProcessTerminate" groupRelation="or">
+      <ProcessTerminate onmatch="include">
+        <Image condition="contains">\</Image>
+      </ProcessTerminate>
+    </RuleGroup>
+
+    <!-- Olay 8: uzak is parcacigi olusturma, hepsi -->
+    <RuleGroup name="CreateRemoteThread" groupRelation="or">
+      <CreateRemoteThread onmatch="include">
+        <SourceImage condition="contains">\</SourceImage>
+      </CreateRemoteThread>
+    </RuleGroup>
+
+    <!-- Olay 10: lsass.exe erisimi -->
+    <RuleGroup name="ProcessAccess" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="end with">\lsass.exe</TargetImage>
+      </ProcessAccess>
+    </RuleGroup>
+
+    <!-- Olay 11: dosya olusturma (OneDrive'a tasinmis klasorler dahil) -->
+    <RuleGroup name="FileCreate" groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="contains">\Start Menu\Programs\Startup\</TargetFilename>
+        <TargetFilename condition="contains">discord_desktop_core</TargetFilename>
+        <TargetFilename condition="contains">\Extensions\</TargetFilename>
+        <TargetFilename condition="contains">\Documents\</TargetFilename>
+        <TargetFilename condition="contains">\Desktop\</TargetFilename>
+        <TargetFilename condition="contains">\Pictures\</TargetFilename>
+        <TargetFilename condition="contains">\Videos\</TargetFilename>
+        <TargetFilename condition="contains">\Music\</TargetFilename>
+        <TargetFilename condition="contains">\Belgeler\</TargetFilename>
+        <TargetFilename condition="contains">\Masaüstü\</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
+
+    <!-- Olay 13: kayit defteri deger yazma -->
+    <RuleGroup name="RegistryEvent" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\RunOnce</TargetObject>
+        <TargetObject condition="contains">\Windows Defender\</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>

@@ -23,7 +23,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-FILES = ["android.cmdb", "windows.cmdb", "windows.yarc", "android_rules.json"]
+FILES = ["android.cmdb", "windows.cmdb", "windows.yarc", "android_rules.json", "behavior_rules.json"]
 
 
 def generate(path: Path):

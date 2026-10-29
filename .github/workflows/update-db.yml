@@ -49,6 +49,7 @@ jobs:
         run: |
           pip install cryptography==44.0.2
           cp engine/rules/android_rules.json engine/dist/
+          cp engine/rules/behavior_rules.json engine/dist/
           python engine/sign_db.py
 
       - name: db-latest surumune yukle
@@ -60,5 +61,5 @@ jobs:
           # Once dosyalar, en son imzali liste: cihaz yarim bir yuklemeyi gorurse parmak izleri tutmaz, reddeder
           gh release upload db-latest engine/dist/version.txt engine/dist/android.cmdb \
             engine/dist/windows.cmdb engine/dist/android_rules.json \
-            engine/dist/windows.yarc engine/dist/yara-version.txt --clobber
+            engine/dist/windows.yarc engine/dist/yara-version.txt engine/dist/behavior_rules.json --clobber
           gh release upload db-latest engine/dist/manifest.json engine/dist/manifest.sig --clobber
