@@ -323,6 +323,29 @@ try {
     $pfReal = Get-ProgramFilesDir
     TCheck 'Program Files ortam degiskeni olmadan bulunur' ($pfReal -and (Test-Path $pfReal) -and $pfReal -notmatch 'x86') $pfReal
     TCheck 'Get-ProgramFilesDir ortam degiskeni kullanmaz' ((Get-Command Get-ProgramFilesDir).Definition -notmatch '\$env:') ''
+
+    # Ayarlar penceresi: 7 bolum, Kaydet/Vazgec yok, tek Kapat
+    $sf = $null
+    try { $sf = New-SettingsForm } catch { Write-Host "  New-SettingsForm: $($_.Exception.Message)" }
+    TCheck 'ayarlar penceresi kuruldu' ($sf -ne $null)
+    if ($sf) {
+        $navNames = @($sf.Tag.nav.Keys)
+        $want = @('Koruma', 'Davranış bekçisi', 'Veritabanı', 'Güvenilir dosyalar', 'Karantina', 'Gelişmiş', 'Hakkında')
+        TCheck 'ayarlar: 7 gezinme bolumu' ($navNames.Count -eq 7 -and (($navNames -join '|') -eq ($want -join '|'))) ($navNames -join '|')
+        TCheck 'ayarlar: 7 sayfa' ($sf.Tag.pages.Count -eq 7) ''
+        foreach ($n in $want) { Select-SettingsPage $sf.Tag $n }
+        TCheck 'ayarlar: tum sayfalar acilir' $true ''
+        TCheck 'ayarlar: Kapat var, Kaydet / Vazgec yok' ((Btn $sf 'Kapat') -and -not (Btn $sf 'Kaydet') -and -not (Btn $sf 'Vazgeç')) ''
+        $sf.Dispose()
+    }
+
+    # Sessiz mod: sari / bilgi bildirimi gizlenir, kirmizi (Sticky) her zaman gosterilir
+    $quiet = [pscustomobject]@{ quietMode = $true }
+    $loud = [pscustomobject]@{ quietMode = $false }
+    TCheck 'sessiz mod: sari bildirim gizlenir' (-not (Test-ToastAllowed $false $quiet)) ''
+    TCheck 'sessiz mod: kirmizi bildirim yine gosterilir' (Test-ToastAllowed $true $quiet) ''
+    TCheck 'sessiz mod kapali: sari bildirim gosterilir' (Test-ToastAllowed $false $loud) ''
+    TCheck 'quietMode varsayilani kapali' ((Get-Config).quietMode -eq $false) ''
 } catch {
     TCheck 'tepsi testleri calisti' $false $_.Exception.Message
 } finally {

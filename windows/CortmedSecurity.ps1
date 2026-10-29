@@ -61,6 +61,8 @@ function Get-Config {
         autoQuarantine = $false
         # Ucuncu motor: ClamAV (yaklasik 500 MB, varsayilan kapali)
         clamav     = $false
+        # true = sari / bilgi bildirimleri gosterilmez; kirmizi (tehlikeli) uyarilar her zaman gosterilir
+        quietMode  = $false
     }
     if (Test-Path $ConfigPath) {
         $saved = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -597,7 +599,15 @@ function Resolve-RedFile($threat) {
 # ------------------------------------------------------------------ uyarilar
 
 # -Sticky: kapatilana kadar ekranda kalir (sadece tehlikeli bulgular icin); digerleri kendiliginden kaybolur
+# Bildirim gosterilsin mi? Kirmizi (Sticky) her zaman; digerleri Sessiz mod aciksa gosterilmez.
+function Test-ToastAllowed([bool]$Sticky, $Config = $null) {
+    if ($Sticky) { return $true }
+    try { if ($null -eq $Config) { $Config = Get-Config } } catch { return $true }
+    return -not ($Config.quietMode -eq $true)
+}
+
 function Show-Toast([string]$title, [string]$text, [switch]$Sticky) {
+    if (-not (Test-ToastAllowed ([bool]$Sticky))) { return }
     try {
         [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
         [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
@@ -2111,112 +2121,628 @@ function Invoke-GuardTick($state, $client, [datetime]$now, [scriptblock]$answer,
 
 # ------------------------------------------------------------------ ayarlar
 
-function Show-Settings($owner) {
-    $cfg = Get-Config
-    $f = New-DarkForm 'Cortmed Security - Ayarlar' 620 770
-    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
-    $f.AutoScroll = $true
-    $f.Controls.Add((New-Label 'Ayarlar' 22 16 $UiText (New-Font 18 'Bold')))
-    $cardW = 560
+$SettingsPageNames = @('Koruma', 'Davranış bekçisi', 'Veritabanı', 'Güvenilir dosyalar', 'Karantina', 'Gelişmiş', 'Hakkında')
+$SettingsCardW = 610
+$AboutUrl = 'https://github.com/cortmed/CortmedSecurity'
 
-    function Add-Section([string]$title, [int]$y, [int]$h) {
-        $f.Controls.Add((New-Label $title.ToUpper() 24 $y $UiAccent (New-Font 8.5 'Bold')))
-        $card = New-Object Windows.Forms.Panel
-        $card.Location = New-Object Drawing.Point(20, ($y + 22)); $card.Size = New-Object Drawing.Size($cardW, $h)
-        $card.BackColor = $UiSurface
-        $f.Controls.Add($card)
-        return $card
+# Ek tarama motoru (ClamAV) kurulumunu arka planda baslatir
+function Start-ClamInstall {
+    if (Test-Path $LauncherExe) { [void](Start-Process $LauncherExe -ArgumentList '--mode', 'InstallClamAV') }
+    else {
+        [void](Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', ('"{0}"' -f (Join-Path $Root 'CortmedSecurity.ps1')), '-Mode', 'InstallClamAV'))
     }
-    function Add-Toggle($card, [string]$title, [string]$desc, [bool]$checked, [int]$y) {
-        $cb = New-Object Windows.Forms.CheckBox
-        $cb.Text = $title; $cb.Checked = $checked; $cb.AutoSize = $true
-        $cb.Font = New-Font 10.5 'Bold'; $cb.ForeColor = $UiText
-        $cb.Location = New-Object Drawing.Point(16, $y)
-        $card.Controls.Add($cb)
-        $card.Controls.Add((New-Label $desc 34 ($y + 26) $UiMuted (New-Font 9) ($cardW - 60)))
-        return $cb
-    }
+}
 
-    # Koruma
-    $sec = Add-Section 'Koruma' 66 168
-    $quar = Add-Toggle $sec 'Virüslü dosyaları otomatik karantinaya al' `
-        'Kapalıyken Cortmed hiçbir dosyaya dokunmaz, sadece uyarır. Açıkken virüslü dosyalar açılamayacakları bir klasöre taşınır.' ($cfg.autoQuarantine -eq $true) 14
+# "Bekciyi ac / onar": onay sorar, UAC ile Install-Guard.ps1'i baslatir. Surec doner (reddedildiyse ya da yoksa $null).
+function Start-GuardSetup {
+    $svcExists = [bool](Get-Service CortmedGuard -ErrorAction SilentlyContinue)
+    $cmdInfo = Get-GuardSetupCommand $svcExists
+    if ($cmdInfo.missing) {
+        [Windows.Forms.MessageBox]::Show('Davranış bekçisinin kurulum dosyaları bulunamadı. Cortmed Security''yi indirdiğiniz paketten yeniden kurup tekrar deneyin.', 'Cortmed Security') | Out-Null
+        return $null
+    }
+    $setup = $cmdInfo.script
+    $a = [Windows.Forms.MessageBox]::Show(
+        "Davranış bekçisi açılacak. Şüpheli davranan bir programı çalışırken durdurur ve ne yapılacağını size sorar.`n`nWindows bir onay penceresi gösterecek. Devam edilsin mi?",
+        'Davranış bekçisini açın', 'YesNo', 'Question')
+    if ($a -ne 'Yes') { return $null }
+    # Dogrudan yonetici olarak (UAC) baslatilir: onay reddedilirse Start-Process hata verir ve hicbir sey olmaz;
+    # boylece cikis kodu yalnizca gercek kurulum sonucunu gosterir. 64 bit PowerShell (Program Files x86 olmasin).
+    $psDir = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) { Join-Path $env:windir 'Sysnative' } else { [Environment]::SystemDirectory }
+    try {
+        $proc = Start-Process (Join-Path $psDir 'WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', ('"{0}"' -f $setup), '-Source', ('"{0}"' -f $cmdInfo.source), '-Elevated')
+        # Tutamac hemen alinir; yoksa surec bitince ExitCode okunamaz
+        if ($proc) { $null = $proc.Handle }
+        return $proc
+    } catch { return $null }
+}
+
+# Bekcinin izin verilen programlar listesi (yalniz hizmet yazar; tepsi sadece okur). Satirlar SHA-256 parmak izidir.
+function Get-GuardAllowedList {
+    $p = Join-Path $GuardDataDir 'allowed.txt'
+    if (-not (Test-Path -LiteralPath $p)) { return @{ ok = $true; items = @() } }
+    try {
+        $items = @([IO.File]::ReadAllLines($p, [Text.Encoding]::UTF8) | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '^[0-9a-fA-F]{64}$' } | Select-Object -Unique)
+        return @{ ok = $true; items = $items }
+    } catch { return @{ ok = $false; items = @() } }
+}
+
+# ---- ayarlar penceresi parcalari
+
+function New-ToggleSwitch([bool]$on, [scriptblock]$onChange, [string]$name = '') {
+    $t = New-Object Windows.Forms.Button
+    $t.Name = 'toggle'; $t.Size = New-Object Drawing.Size(48, 26)
+    $t.FlatStyle = 'Flat'; $t.FlatAppearance.BorderSize = 0; $t.TabStop = $true
+    $t.BackColor = $UiSurface
+    $t.FlatAppearance.MouseOverBackColor = $UiSurface; $t.FlatAppearance.MouseDownBackColor = $UiSurface
+    $t.Cursor = 'Hand'; $t.AccessibleName = $name; $t.AccessibleRole = 'CheckButton'
+    $t.Tag = @{ on = $on; change = $onChange }
+    $t.Add_Paint({
+        param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $on = [bool]$s.Tag.on
+        $w = $s.Width - 2; $h = $s.Height - 2
+        $path = New-Object Drawing.Drawing2D.GraphicsPath
+        $path.AddArc(0, 0, $h, $h, 90, 180); $path.AddArc(($w - $h), 0, $h, $h, 270, 180); $path.CloseFigure()
+        $trackColor = if ($on) { $UiAccent } else { [Drawing.Color]::FromArgb(62, 76, 100) }
+        $kb = New-Object Drawing.SolidBrush $trackColor
+        $g.FillPath($kb, $path); $kb.Dispose()
+        $knobColor = if ($on) { [Drawing.Color]::White } else { [Drawing.Color]::FromArgb(205, 213, 226) }
+        $kb = New-Object Drawing.SolidBrush $knobColor
+        $kx = if ($on) { $w - $h + 3 } else { 3 }
+        $g.FillEllipse($kb, $kx, 3, ($h - 6), ($h - 6)); $kb.Dispose()
+        if ($s.Focused) { $pen = New-Object Drawing.Pen $UiText, 1; $g.DrawPath($pen, $path); $pen.Dispose() }
+        $path.Dispose()
+    })
+    $t.Add_Click({
+        param($s, $e)
+        $s.Tag.on = -not [bool]$s.Tag.on
+        $s.Invalidate()
+        if ($s.Tag.change) { & $s.Tag.change $s ([bool]$s.Tag.on) }
+    })
+    return $t
+}
+
+# Baslik + soluk tek satir aciklama solda, acma/kapama dugmesi sagda
+function New-ToggleRow([string]$title, [string]$desc, [bool]$on, [int]$y, [scriptblock]$onChange) {
+    $w = $SettingsCardW
+    $card = New-Object Windows.Forms.Panel
+    $card.Location = New-Object Drawing.Point(30, $y); $card.Size = New-Object Drawing.Size($w, 84); $card.BackColor = $UiSurface
+    $card.Controls.Add((New-Label $title 18 14 $UiText (New-Font 10.5 'Bold')))
+    $card.Controls.Add((New-Label $desc 18 40 $UiMuted (New-Font 9) ($w - 110)))
+    $t = New-ToggleSwitch $on $onChange $title
+    $t.Location = New-Object Drawing.Point(($w - 18 - 48), 29)
+    $card.Controls.Add($t)
+    $card.Region = New-RoundRegion $w 84 8
+    return $card
+}
+
+function New-SettingsPage([string]$title, [string]$sub) {
+    $p = New-Object Windows.Forms.Panel
+    $p.Dock = 'Fill'; $p.BackColor = $UiBg; $p.AutoScroll = $true; $p.Visible = $false
+    $p.Controls.Add((New-Label $title 30 24 $UiText (New-Font 18 'Bold')))
+    $p.Controls.Add((New-Label $sub 30 62 $UiMuted (New-Font 9.5) $SettingsCardW))
+    return $p
+}
+
+function New-SettingsCard([int]$y, [int]$h) {
+    $card = New-Object Windows.Forms.Panel
+    $card.Location = New-Object Drawing.Point(30, $y); $card.Size = New-Object Drawing.Size($SettingsCardW, $h); $card.BackColor = $UiSurface
+    $card.Region = New-RoundRegion $SettingsCardW $h 8
+    return $card
+}
+
+function New-SettingsHeading([string]$text, [int]$y) {
+    return (New-Label $text.ToUpper([Globalization.CultureInfo]'tr-TR') 32 $y $UiAccent (New-Font 8.5 'Bold'))
+}
+
+function New-SettingsNote([string]$text, [int]$x, [int]$y, [int]$maxWidth = 570) {
+    $l = New-Label $text $x $y $UiLevel.RED (New-Font 9) $maxWidth
+    $l.Visible = $false
+    return $l
+}
+
+function New-SettingsTextBox([string]$text, [int]$x, [int]$y, [int]$w) {
+    $tb = New-Object Windows.Forms.TextBox
+    $tb.Text = $text; $tb.Location = New-Object Drawing.Point($x, $y); $tb.Width = $w
+    $tb.BackColor = $UiSurface2; $tb.ForeColor = $UiText; $tb.BorderStyle = 'FixedSingle'; $tb.Font = New-Font 10
+    return $tb
+}
+
+function New-NavButton([string]$text, [int]$y) {
+    $b = New-Object Windows.Forms.Button
+    $b.Name = $text; $b.Text = $text; $b.Size = New-Object Drawing.Size(210, 44); $b.Location = New-Object Drawing.Point(0, $y)
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0; $b.Cursor = 'Hand'
+    $b.TextAlign = 'MiddleLeft'; $b.Padding = New-Object Windows.Forms.Padding(24, 0, 0, 0)
+    $b.Font = New-Font 10.5; $b.BackColor = [Drawing.Color]::FromArgb(7, 16, 30); $b.ForeColor = $UiMuted
+    $b.FlatAppearance.MouseOverBackColor = $UiSurface
+    $b.Tag = 'off'
+    $b.Add_Paint({
+        param($s, $e)
+        if ($s.Tag -eq 'sel') {
+            $e.Graphics.SmoothingMode = 'AntiAlias'
+            $br = New-Object Drawing.SolidBrush $UiAccent
+            $e.Graphics.FillRectangle($br, 0, 9, 4, ($s.Height - 18)); $br.Dispose()
+        }
+    })
+    return $b
+}
+
+# Her degisiklik aninda kaydedilir; altta kisa bir "Kaydedildi" belirir
+function Show-SettingsSaved($ctx) {
+    $ctx.flash.Text = 'Kaydedildi ✓'; $ctx.flash.Visible = $true
+    $ctx.flashTimer.Stop(); $ctx.flashTimer.Start()
+}
+
+function Save-SettingsChange($ctx, [scriptblock]$apply) {
+    try {
+        $cfg = Get-Config
+        & $apply $cfg
+        Save-Config $cfg
+        Show-SettingsSaved $ctx
+    } catch {
+        Write-Log "Ayar kaydedilemedi: $_"
+        $ctx.flash.Text = 'Kaydedilemedi'; $ctx.flash.Visible = $true
+    }
+}
+
+# ---- sayfalar
+
+function Build-SettingsKoruma($ctx, $p, $cfg) {
+    $r1 = New-ToggleRow 'Virüslü dosyaları otomatik karantinaya al' `
+        'Kapalıyken Cortmed hiçbir dosyaya dokunmaz, sadece uyarır. Açıkken virüslü dosyalar açılamayacakları bir klasöre taşınır.' ($cfg.autoQuarantine -eq $true) 104 {
+        param($s, $on)
+        $c = $s.FindForm().Tag
+        Save-SettingsChange $c { param($x) $x.autoQuarantine = $on }
+    }
     $clamDesc = 'Arşivlerin ve kurulum dosyalarının içine de bakan üçüncü tarama motoru. İlk açılışta yaklaşık 500 MB indirir.'
     $clamState = Get-ClamStatusText
     if ($cfg.clamav -eq $true -and -not $clamState) { $clamDesc += '  Durum: hazır.' } elseif ($cfg.clamav -eq $true) { $clamDesc += "  Durum: $clamState." }
-    $clamBox = Add-Toggle $sec 'Ek tarama motoru (ClamAV)' $clamDesc ($cfg.clamav -eq $true) 90
+    $r2 = New-ToggleRow 'Ek tarama motoru (ClamAV)' $clamDesc ($cfg.clamav -eq $true) 204 {
+        param($s, $on)
+        $c = $s.FindForm().Tag
+        Save-SettingsChange $c { param($x) $x.clamav = $on }
+        # Acik ama hazir degilse (ilk acilis ya da yarida kalan kurulum) kurulumu baslat
+        if ($on -and -not (Test-ClamReady) -and -not (Test-ClamInstalling)) {
+            Start-ClamInstall
+            [Windows.Forms.MessageBox]::Show($s.FindForm(), 'Ek tarama motoru arka planda kuruluyor. İnternet hızınıza göre 5-15 dakika sürer.', 'Cortmed Security') | Out-Null
+        }
+    }
+    $r3 = New-ToggleRow 'Sessiz mod' `
+        'Önemsiz bildirimleri gizler. Tehlikeli bir şey bulunursa kırmızı uyarı yine de gösterilir.' ($cfg.quietMode -eq $true) 304 {
+        param($s, $on)
+        $c = $s.FindForm().Tag
+        Save-SettingsChange $c { param($x) $x.quietMode = $on }
+    }
+    $p.Controls.AddRange(@($r1, $r2, $r3))
+}
 
-    # VirusTotal
-    $sec = Add-Section 'İkinci görüş (isteğe bağlı)' 262 118
-    $sec.Controls.Add((New-Label 'Şüpheli dosyaları 70''ten fazla antivirüs programına sorar. Bunun için ücretsiz bir VirusTotal anahtarı gerekir.' 16 12 $UiMuted (New-Font 9) ($cardW - 32)))
-    $vt = New-Object Windows.Forms.TextBox
-    $vt.Text = [string]$cfg.vtKey; $vt.Location = New-Object Drawing.Point(16, 54); $vt.Width = $cardW - 32
-    $vt.BackColor = $UiSurface2; $vt.ForeColor = $UiText; $vt.BorderStyle = 'FixedSingle'
-    $sec.Controls.Add($vt)
+function Build-SettingsGuard($ctx, $p) {
+    $ctx.guardCard = $null
+    $ctx.allowedHead = New-SettingsHeading 'İzin verdiğiniz programlar' 214
+    $card = New-SettingsCard 238 150
+    $lb = New-Object Windows.Forms.ListBox
+    $lb.Location = New-Object Drawing.Point(14, 12); $lb.Size = New-Object Drawing.Size(($SettingsCardW - 28), 126)
+    $lb.BorderStyle = 'None'; $lb.BackColor = $UiSurface; $lb.ForeColor = $UiText; $lb.SelectionMode = 'None'
+    $lb.Font = New-Object Drawing.Font('Consolas', 10)
+    $card.Controls.Add($lb)
+    $ctx.allowedList = $lb
+    $note = New-Label 'İzin verdiğiniz programlar. Bu listeyi değiştirmek için yönetici izni gerekir.' 32 402 $UiMuted (New-Font 9) $SettingsCardW
+    $p.Controls.AddRange(@($ctx.allowedHead, $card, $note))
+}
+
+function Update-SettingsGuardPage($ctx) {
+    $p = $ctx.pages['Davranış bekçisi']
+    $gs = Get-GuardStatus
+    $chk = Get-GuardCheck $gs
+    if ($ctx.guardCard) { $p.Controls.Remove($ctx.guardCard); $ctx.guardCard.Dispose() }
+    $dotColor = if ($chk.ok) { $UiLevel.OK } else { $UiLevel.YELLOW }
+    $detail = if ($chk.ok) { 'Şüpheli davranan programlar çalışırken durdurulur ve size sorulur.' }
+        elseif ($chk.hint) { [string]$chk.hint }
+        elseif (-not $gs.installed) { 'Şüpheli davranan programları çalışırken durdurmak için bekçiyi açın.' }
+        else { 'Bazı davranışlar görülmeyebilir.' }
+    $btn = $null
+    if ($chk.offer) {
+        $btn = New-FlatButton $(if ($gs.installed) { 'Bekçiyi onar' } else { 'Bekçiyi aç' }) $true
+        $btn.Add_Click({
+            param($s, $e)
+            $c = $s.FindForm().Tag
+            if ($c.guardProc) { return }
+            $gp = Start-GuardSetup
+            if ($gp) { $c.guardProc = $gp; $s.Enabled = $false; $c.guardTimer.Start() }
+        })
+    }
+    $card = New-Card $SettingsCardW 84 (New-LevelDot $dotColor) $chk.text $detail @($btn) 2 $ctx.tips
+    $card.Location = New-Object Drawing.Point(30, 104)
+    $p.Controls.Add($card); $ctx.guardCard = $card
+
+    $al = Get-GuardAllowedList
+    $ctx.allowedList.Items.Clear()
+    if (-not $al.ok) { [void]$ctx.allowedList.Items.Add('Liste şu an okunamadı.'); $ctx.allowedHead.Text = 'İZİN VERDİĞİNİZ PROGRAMLAR' }
+    elseif (-not $al.items.Count) { [void]$ctx.allowedList.Items.Add('Henüz izin verdiğiniz bir program yok.'); $ctx.allowedHead.Text = 'İZİN VERDİĞİNİZ PROGRAMLAR' }
+    else {
+        foreach ($h in $al.items) { [void]$ctx.allowedList.Items.Add(('Program  ' + $h.Substring(0, 16).ToLowerInvariant() + '…')) }
+        $ctx.allowedHead.Text = 'İZİN VERDİĞİNİZ PROGRAMLAR ({0})' -f $al.items.Count
+    }
+}
+
+function Build-SettingsDb($ctx, $p, $cfg) {
+    $info = New-SettingsCard 104 132
+    $y = 16
+    foreach ($row in @(@('Sürüm', 'dbVer'), @('İmza sayısı', 'dbSigs'), @('Son güncelleme', 'dbLast'))) {
+        $info.Controls.Add((New-Label $row[0] 18 $y $UiMuted (New-Font 9.5)))
+        $v = New-Label '' 170 $y $UiText (New-Font 9.5) 420
+        $info.Controls.Add($v); $ctx[$row[1]] = $v
+        $y += 38
+    }
+    $upd = New-FlatButton 'Şimdi güncelle' $true
+    $upd.AutoSize = $false; $upd.Size = New-Object Drawing.Size(170, 40); $upd.Location = New-Object Drawing.Point(30, 252)
+    $upd.Add_Click({ param($s, $e) Start-DbUpdate ($s.FindForm().Tag) })
+    $ctx.dbBtn = $upd
+    $ctx.dbMsg = New-Label '' 216 262 $UiMuted (New-Font 9.5) 440
+
+    # VirusTotal anahtari
+    $vtCard = New-SettingsCard 322 176
+    $vtCard.Controls.Add((New-Label 'İkinci görüş (isteğe bağlı)' 18 14 $UiText (New-Font 10.5 'Bold')))
+    $vtCard.Controls.Add((New-Label 'Şüpheli dosyaları 70''ten fazla antivirüs programına sorar. Bunun için ücretsiz bir VirusTotal anahtarı gerekir.' 18 40 $UiMuted (New-Font 9) ($SettingsCardW - 36)))
+    $vt = New-SettingsTextBox ([string]$cfg.vtKey) 18 84 ($SettingsCardW - 36 - 50)
+    $vt.UseSystemPasswordChar = $true
+    $vt.Add_TextChanged({
+        param($s, $e)
+        $c = $s.FindForm().Tag
+        $v = $s.Text.Trim()
+        if ($v -eq '' -or $v -match '^[0-9a-fA-F]{64}$') {
+            $c.vtNote.Visible = $false
+            Save-SettingsChange $c { param($x) $x.vtKey = $v }
+        } else {
+            $c.vtNote.Text = 'Anahtar 64 karakter olmalı (yalnızca 0-9 ve a-f). Doğru olana kadar kaydedilmez.'
+            $c.vtNote.Visible = $true
+        }
+    })
+    $eye = New-Object Windows.Forms.Button
+    $eye.Text = '👁'; $eye.Font = New-Object Drawing.Font('Segoe UI Emoji', 10); $eye.FlatStyle = 'Flat'; $eye.Cursor = 'Hand'
+    $eye.Size = New-Object Drawing.Size(40, 28); $eye.Location = New-Object Drawing.Point(($SettingsCardW - 18 - 40), 83)
+    $eye.BackColor = $UiSurface2; $eye.ForeColor = $UiMuted; $eye.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(48, 72, 108)
+    $ctx.tips.SetToolTip($eye, 'Anahtarı göster / gizle')
+    $eye.AccessibleName = 'Anahtarı göster veya gizle'
+    $eye.Add_Click({
+        param($s, $e)
+        $c = $s.FindForm().Tag
+        $c.vtBox.UseSystemPasswordChar = -not $c.vtBox.UseSystemPasswordChar
+        $s.ForeColor = if ($c.vtBox.UseSystemPasswordChar) { $UiMuted } else { $UiAccent }
+    })
     $link = New-Object Windows.Forms.LinkLabel
-    $link.Text = 'Ücretsiz anahtar al (virustotal.com)'; $link.AutoSize = $true; $link.Location = New-Object Drawing.Point(16, 86)
+    $link.Text = 'Ücretsiz anahtar al (virustotal.com)'; $link.AutoSize = $true; $link.Location = New-Object Drawing.Point(18, 122)
     $link.LinkColor = $UiAccent; $link.ActiveLinkColor = $UiText; $link.Font = New-Font 9
     $link.Add_LinkClicked({ Start-Process 'https://www.virustotal.com/gui/join-us' })
-    $sec.Controls.Add($link)
+    $ctx.vtBox = $vt
+    $ctx.vtNote = New-SettingsNote '' 18 146
+    $vtCard.Controls.AddRange(@($vt, $eye, $link, $ctx.vtNote))
+    $p.Controls.AddRange(@($info, $upd, $ctx.dbMsg, $vtCard))
+}
 
-    # Veritabani
-    $sec = Add-Section 'Virüs veritabanı' 408 128
-    $dbText = 'Veritabanı her gün kendiliğinden güncellenir.'
-    try { Initialize-Engine; $dbText = ('{0:N0} imza  ·  {1:dd.MM.yyyy} tarihli. Her gün kendiliğinden güncellenir.' -f $script:Db.SignatureCount, ([DateTimeOffset]::FromUnixTimeSeconds($script:Db.BuildTime).LocalDateTime)) } catch { }
-    $sec.Controls.Add((New-Label $dbText 16 14 $UiText (New-Font 9.5) ($cardW - 200)))
-    $upd = New-FlatButton 'Şimdi güncelle'
-    $upd.Location = New-Object Drawing.Point(($cardW - 170), 10); $upd.AutoSize = $false; $upd.Width = 154; $upd.Height = 34
-    $upd.Add_Click({
-        $f.Cursor = 'WaitCursor'; $r = Update-Database; $f.Cursor = 'Default'
-        [Windows.Forms.MessageBox]::Show($(if ($r) { $r } else { 'Güncellenemedi. İnternet bağlantısını ve güncelleme adresini kontrol edin.' }), 'Cortmed Security') | Out-Null
-    })
-    $sec.Controls.Add($upd)
-    $sec.Controls.Add((New-Label 'Gelişmiş: güncelleme adresi' 16 62 $UiMuted (New-Font 8.5)))
-    $url = New-Object Windows.Forms.TextBox
-    $url.Text = [string]$cfg.updateUrl; $url.Location = New-Object Drawing.Point(16, 84); $url.Width = $cardW - 32
-    $url.BackColor = $UiSurface2; $url.ForeColor = $UiMuted; $url.BorderStyle = 'FixedSingle'; $url.Font = New-Font 9
-    $sec.Controls.Add($url)
-
-    # Guvenilen dosyalar ve karantina
-    $sec = Add-Section 'Güvendiğiniz dosyalar ve karantina' 564 62
-    $trustedCount = @($cfg.trustedHashes | Where-Object { $_ }).Count
-    $trustLabel = New-Label "$trustedCount dosya güvenilir olarak işaretli." 16 20 $UiText (New-Font 9.5)
-    $sec.Controls.Add($trustLabel)
-    $reset = New-FlatButton 'Listeyi sıfırla'
-    $reset.Location = New-Object Drawing.Point(($cardW - 330), 13); $reset.AutoSize = $false; $reset.Width = 150; $reset.Height = 34
-    $reset.Add_Click({
-        # Hemen kaydet: Vazgec'e basilsa bile sifirlama gecerli olsun
-        $saved = Get-Config; $saved.trustedHashes = @(); Save-Config $saved
-        $cfg.trustedHashes = @(); $trustLabel.Text = '0 dosya güvenilir olarak işaretli.'
-    })
-    $qbtn = New-FlatButton 'Karantina klasörü'
-    $qbtn.Location = New-Object Drawing.Point(($cardW - 170), 13); $qbtn.AutoSize = $false; $qbtn.Width = 154; $qbtn.Height = 34
-    $qbtn.Add_Click({ Start-Process explorer.exe $QuarantineDir })
-    $sec.Controls.AddRange(@($reset, $qbtn))
-
-    $save = New-FlatButton 'Kaydet' $true
-    $save.Location = New-Object Drawing.Point(20, 670); $save.AutoSize = $false; $save.Width = 150
-    $cancel = New-FlatButton 'Vazgeç'
-    $cancel.Location = New-Object Drawing.Point(180, 670); $cancel.AutoSize = $false; $cancel.Width = 120
-    $cancel.Add_Click({ $f.Close() })
-    $save.Add_Click({
-        $cfg.autoQuarantine = $quar.Checked
-        $cfg.clamav = $clamBox.Checked
-        $cfg.vtKey = $vt.Text.Trim()
-        $cfg.updateUrl = $url.Text.Trim()
-        Save-Config $cfg
-        # Acik ama hazir degilse (ilk acilis ya da yarida kalan kurulum) kurulumu baslat
-        if ($cfg.clamav -and -not (Test-ClamReady) -and -not (Test-ClamInstalling)) {
-            if (Test-Path $LauncherExe) { [void](Start-Process $LauncherExe -ArgumentList '--mode', 'InstallClamAV') }
-            else {
-                [void](Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
-                    '-File', ('"{0}"' -f (Join-Path $Root 'CortmedSecurity.ps1')), '-Mode', 'InstallClamAV'))
-            }
-            [Windows.Forms.MessageBox]::Show('Ek tarama motoru arka planda kuruluyor. İnternet hızınıza göre 5-15 dakika sürer.', 'Cortmed Security') | Out-Null
+function Update-SettingsDbPage($ctx) {
+    $verFile = Join-Path $DataDir 'db-version.txt'
+    $ver = ''
+    try { if (Test-Path -LiteralPath $verFile) { $ver = (Get-Content -LiteralPath $verFile -Raw -Encoding UTF8).Trim() } } catch { }
+    $status = Read-Json $StatusPath $null
+    $build = $null; $sigs = $null
+    if ($script:Db) { $build = $script:Db.BuildTime; $sigs = $script:Db.SignatureCount }
+    elseif ($status) { $build = $status.dbTime; $sigs = $status.signatures }
+    $date = ''
+    if ($build) { try { $date = '{0:dd.MM.yyyy}' -f ([DateTimeOffset]::FromUnixTimeSeconds([long]$build).LocalDateTime) } catch { } }
+    $parts = @($ver, $date) | Where-Object { $_ }
+    $ctx.dbVer.Text = if ($parts) { $parts -join '  ·  ' } else { 'Paketle gelen sürüm' }
+    $ctx.dbSigs.Text = if ($sigs) { '{0:N0}' -f [int]$sigs } else { 'Bilinmiyor' }
+    $last = 'Henüz güncelleme yapılmadı'
+    $rf = Join-Path $DataDir 'db-update.txt'
+    try {
+        if (Test-Path -LiteralPath $rf) {
+            $raw = (Get-Content -LiteralPath $rf -Raw -Encoding UTF8).Trim()
+            $i = $raw.IndexOf('|')
+            if ($i -gt 0) { $last = '{0:dd.MM.yyyy HH:mm}  ·  {1}' -f [datetime]$raw.Substring(0, $i), $raw.Substring($i + 1) }
         }
-        $f.Close()
+    } catch { }
+    $ctx.dbLast.Text = $last
+}
+
+# Guncelleme ayri bir surecte calisir (pencere donmaz); sonuc zamanlayicida okunur
+function Start-DbUpdate($ctx) {
+    if ($ctx.updProc) { return }
+    $out = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-upd-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    $script = (Join-Path $Root 'CortmedSecurity.ps1').Replace("'", "''")
+    $cmd = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; & '$script' -Mode Update"
+    $ctx.dbBtn.Enabled = $false; $ctx.dbBtn.Text = 'Güncelleniyor…'
+    $ctx.dbMsg.ForeColor = $UiMuted; $ctx.dbMsg.Text = 'Güncelleme denetleniyor. Bu birkaç dakika sürebilir.'
+    try {
+        $ctx.updOut = $out
+        $ctx.updProc = Start-Process powershell.exe -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ('"{0}"' -f $cmd))
+        $null = $ctx.updProc.Handle
+        $ctx.updTimer.Start()
+    } catch {
+        $ctx.updProc = $null
+        Complete-DbUpdate $ctx ''
+    }
+}
+
+function Complete-DbUpdate($ctx, [string]$msg) {
+    $ctx.dbBtn.Enabled = $true; $ctx.dbBtn.Text = 'Şimdi güncelle'
+    $ok = [bool]$msg
+    if (-not $ok) { $msg = 'Güncellenemedi. İnternet bağlantısını ve güncelleme adresini kontrol edin.' }
+    $ctx.dbMsg.ForeColor = if ($ok) { $UiLevel.OK } else { $UiLevel.RED }
+    $ctx.dbMsg.Text = $msg
+    try { Set-Content -LiteralPath (Join-Path $DataDir 'db-update.txt') -Value ('{0}|{1}' -f (Get-Date).ToString('o'), $msg) -Encoding UTF8 } catch { }
+    if ($ok) { try { Initialize-Engine } catch { } }
+    Update-SettingsDbPage $ctx
+}
+
+function Update-SettingsTrustedPage($ctx) {
+    $flow = $ctx.trustFlow
+    $flow.SuspendLayout()
+    foreach ($c in @($flow.Controls)) { $flow.Controls.Remove($c); $c.Dispose() }
+    $hashes = @((Get-Config).trustedHashes | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    $ctx.trustCount.Text = if ($hashes.Count) { "$($hashes.Count) dosya güvenilir olarak işaretli." } else { 'Güvenilir olarak işaretli dosya yok.' }
+    $ctx.trustReset.Enabled = [bool]$hashes.Count
+    if (-not $hashes.Count) {
+        $flow.Controls.Add((New-Label 'Henüz güvendiğiniz bir dosya yok.' 0 0 $UiMuted (New-Font 10)))
+    }
+    foreach ($h in $hashes) {
+        $short = if ($h.Length -gt 16) { $h.Substring(0, 16) + '…' } else { $h }
+        $rm = New-FlatButton 'Kaldır' $false 'muted'
+        $rm.Tag = $h
+        $rm.Add_Click({
+            param($s, $e)
+            $c = $s.FindForm().Tag; $h = [string]$s.Tag
+            Save-SettingsChange $c { param($x) $x.trustedHashes = @(@($x.trustedHashes) | Where-Object { $_ -and $_ -ne $h }) }
+            Update-SettingsTrustedPage $c
+        })
+        $card = New-Card 590 62 $null $short "Dosya adı kaydedilmemiş. Tam parmak izi: $h" @($rm) 1 $ctx.tips
+        $flow.Controls.Add($card)
+    }
+    $flow.ResumeLayout()
+}
+
+function Build-SettingsTrusted($ctx, $p) {
+    $ctx.trustCount = New-Label '' 32 108 $UiText (New-Font 10.5 'Bold')
+    $reset = New-FlatButton 'Hepsini sıfırla' $false 'muted'
+    $reset.AutoSize = $false; $reset.Size = New-Object Drawing.Size(160, 38); $reset.Location = New-Object Drawing.Point(($SettingsCardW + 30 - 160), 98)
+    $reset.Add_Click({
+        param($s, $e)
+        $c = $s.FindForm().Tag
+        $n = @((Get-Config).trustedHashes | Where-Object { $_ }).Count
+        $a = [Windows.Forms.MessageBox]::Show($s.FindForm(),
+            "Güvendiğiniz $n dosyanın hepsi listeden çıkarılacak. Bu dosyalar için Cortmed yeniden uyarı verebilir. Devam edilsin mi?",
+            'Hepsini sıfırla', 'YesNo', 'Warning')
+        if ($a -ne 'Yes') { return }
+        Save-SettingsChange $c { param($x) $x.trustedHashes = @() }
+        Update-SettingsTrustedPage $c
     })
-    $f.Controls.AddRange(@($save, $cancel))
+    $flow = New-Object Windows.Forms.FlowLayoutPanel
+    $flow.Location = New-Object Drawing.Point(30, 148); $flow.Size = New-Object Drawing.Size(($SettingsCardW + 20), 412)
+    $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true; $flow.BackColor = $UiBg
+    $ctx.trustFlow = $flow; $ctx.trustReset = $reset
+    $p.Controls.AddRange(@($ctx.trustCount, $reset, $flow))
+}
+
+function Update-SettingsQuarantinePage($ctx) {
+    $flow = $ctx.quarFlow
+    $flow.SuspendLayout()
+    foreach ($c in @($flow.Controls)) { $flow.Controls.Remove($c); $c.Dispose() }
+    $files = @(Get-ChildItem -LiteralPath $QuarantineDir -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 200)
+    $ctx.quarCount.Text = if ($files.Count) { "$($files.Count) dosya karantinada." } else { 'Karantinada dosya yok.' }
+    if (-not $files.Count) {
+        $flow.Controls.Add((New-Label 'Karantinaya alınmış bir dosya yok. Cortmed dosyaları kendiliğinden silmez.' 0 0 $UiMuted (New-Font 10)))
+    }
+    foreach ($fi in $files) {
+        $name = $fi.Name; $when = $fi.LastWriteTime
+        if ($fi.Name -match '^(\d{8}-\d{6})_(.+)\.karantina$') {
+            $name = $Matches[2]
+            try { $when = [datetime]::ParseExact($Matches[1], 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture) } catch { }
+        }
+        $card = New-Card 590 62 $null $name ('{0:dd.MM.yyyy HH:mm}  ·  {1}' -f $when, (Format-Size $fi.Length)) @() 1 $ctx.tips
+        $flow.Controls.Add($card)
+    }
+    $flow.ResumeLayout()
+}
+
+function Build-SettingsQuarantine($ctx, $p) {
+    $ctx.quarCount = New-Label '' 32 108 $UiText (New-Font 10.5 'Bold')
+    $open = New-FlatButton 'Klasörü aç' $false 'muted'
+    $open.AutoSize = $false; $open.Size = New-Object Drawing.Size(160, 38); $open.Location = New-Object Drawing.Point(($SettingsCardW + 30 - 160), 98)
+    $open.Add_Click({ Start-Process explorer.exe $QuarantineDir })
+    $flow = New-Object Windows.Forms.FlowLayoutPanel
+    $flow.Location = New-Object Drawing.Point(30, 148); $flow.Size = New-Object Drawing.Size(($SettingsCardW + 20), 412)
+    $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true; $flow.BackColor = $UiBg
+    $ctx.quarFlow = $flow
+    $p.Controls.AddRange(@($ctx.quarCount, $open, $flow))
+}
+
+function Build-SettingsAdvanced($ctx, $p, $cfg) {
+    $card = New-SettingsCard 104 150
+    $card.Controls.Add((New-Label 'Güncelleme adresi' 18 14 $UiText (New-Font 10.5 'Bold')))
+    $card.Controls.Add((New-Label 'Bunu değiştirmeniz gerekmez' 18 40 $UiMuted (New-Font 9)))
+    $tb = New-SettingsTextBox ([string]$cfg.updateUrl) 18 70 ($SettingsCardW - 36)
+    $tb.Font = New-Font 9.5
+    $tb.Add_TextChanged({
+        param($s, $e)
+        $c = $s.FindForm().Tag
+        $v = $s.Text.Trim()
+        if ($v -eq '' -or $v -match '^https?://\S+$') {
+            $c.urlNote.Visible = $false
+            Save-SettingsChange $c { param($x) $x.updateUrl = $v }
+        } else {
+            $c.urlNote.Text = 'Adres http:// ya da https:// ile başlamalı. Doğru olana kadar kaydedilmez.'
+            $c.urlNote.Visible = $true
+        }
+    })
+    $ctx.urlBox = $tb
+    $ctx.urlNote = New-SettingsNote '' 18 100
+    $reset = New-Object Windows.Forms.LinkLabel
+    $reset.Text = 'Varsayılan adrese dön'; $reset.AutoSize = $true; $reset.Location = New-Object Drawing.Point(18, 120)
+    $reset.LinkColor = $UiAccent; $reset.ActiveLinkColor = $UiText; $reset.Font = New-Font 9
+    $reset.Add_LinkClicked({ param($s, $e) $s.FindForm().Tag.urlBox.Text = $DefaultUpdateUrl })
+    $card.Controls.AddRange(@($tb, $ctx.urlNote, $reset))
+
+    $logBtn = New-FlatButton 'Kayıt dosyasını aç'
+    $logBtn.Add_Click({
+        param($s, $e)
+        if (Test-Path -LiteralPath $LogPath) { Start-Process notepad.exe ('"{0}"' -f $LogPath) }
+        else { [Windows.Forms.MessageBox]::Show($s.FindForm(), 'Henüz bir kayıt dosyası oluşmadı.', 'Cortmed Security') | Out-Null }
+    })
+    $logCard = New-Card $SettingsCardW 84 $null 'Kayıt dosyası' 'Cortmed''in neler yaptığını gösteren düz yazı dosyası.' @($logBtn) 1 $ctx.tips
+    $logCard.Location = New-Object Drawing.Point(30, 274)
+    $p.Controls.AddRange(@($card, $logCard))
+}
+
+function Build-SettingsAbout($ctx, $p) {
+    $logo = Get-CortmedLogo
+    if ($logo) {
+        $pic = New-Object Windows.Forms.PictureBox
+        $pic.Image = $logo; $pic.SizeMode = 'Zoom'; $pic.Size = New-Object Drawing.Size(96, 96); $pic.Location = New-Object Drawing.Point(30, 110)
+        $p.Controls.Add($pic)
+    }
+    $p.Controls.Add((New-Label 'Cortmed Security' 144 120 $UiText (New-Font 20 'Bold')))
+    $ver = ''
+    $vf = Join-Path $Root 'version.txt'
+    try {
+        if (Test-Path -LiteralPath $vf) { $ver = 'Sürüm ' + (Get-Content -LiteralPath $vf -Raw -Encoding UTF8).Trim() }
+        else { $ver = 'Sürüm tarihi: {0:dd.MM.yyyy}' -f (Get-Item -LiteralPath (Join-Path $Root 'CortmedSecurity.ps1')).LastWriteTime }
+    } catch { }
+    $p.Controls.Add((New-Label $ver 146 160 $UiMuted (New-Font 10)))
+    $p.Controls.Add((New-Label 'Ailenizin bilgisayarını arka planda koruyan, ücretsiz ve sade bir güvenlik aracı.' 146 190 $UiText (New-Font 10) 460))
+    $link = New-Object Windows.Forms.LinkLabel
+    $link.Text = $AboutUrl; $link.AutoSize = $true; $link.Location = New-Object Drawing.Point(146, 242)
+    $link.LinkColor = $UiAccent; $link.ActiveLinkColor = $UiText; $link.Font = New-Font 10
+    $link.Add_LinkClicked({ Start-Process 'https://github.com/cortmed/CortmedSecurity' })
+    $p.Controls.Add($link)
+}
+
+function Select-SettingsPage($ctx, [string]$name) {
+    foreach ($k in $ctx.pages.Keys) { $ctx.pages[$k].Visible = ($k -eq $name) }
+    foreach ($k in $ctx.nav.Keys) {
+        $b = $ctx.nav[$k]; $on = ($k -eq $name)
+        $b.Tag = if ($on) { 'sel' } else { 'off' }
+        $b.BackColor = if ($on) { $UiSurface2 } else { [Drawing.Color]::FromArgb(7, 16, 30) }
+        $b.ForeColor = if ($on) { $UiText } else { $UiMuted }
+        $b.Invalidate()
+    }
+    switch ($name) {
+        'Davranış bekçisi' { Update-SettingsGuardPage $ctx }
+        'Veritabanı' { Update-SettingsDbPage $ctx }
+        'Güvenilir dosyalar' { Update-SettingsTrustedPage $ctx }
+        'Karantina' { Update-SettingsQuarantinePage $ctx }
+    }
+}
+
+# Ayarlar penceresini kurar (gostermez). Tum durum $form.Tag icindeki $ctx'te; olay islemcileri ona FindForm().Tag ile ulasir.
+function New-SettingsForm {
+    $cfg = Get-Config
+    $f = New-DarkForm 'Cortmed Security - Ayarlar' 900 640
+    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+    $f.ClientSize = New-Object Drawing.Size(900, 620)
+    $ctx = @{ form = $f; pages = [ordered]@{}; nav = [ordered]@{}; tips = (New-Object Windows.Forms.ToolTip); guardProc = $null; updProc = $null; updOut = $null }
+    $f.Tag = $ctx
+
+    # Sag taraf: sayfalar + alt serit (Kaydedildi / Kapat)
+    $right = New-Object Windows.Forms.Panel
+    $right.Dock = 'Fill'; $right.BackColor = $UiBg
+    $host1 = New-Object Windows.Forms.Panel
+    $host1.Dock = 'Fill'; $host1.BackColor = $UiBg
+    $bar = New-Object Windows.Forms.Panel
+    $bar.Dock = 'Bottom'; $bar.Height = 60; $bar.BackColor = [Drawing.Color]::FromArgb(7, 16, 30)
+    $ctx.flash = New-Label '' 30 19 $UiLevel.OK (New-Font 10.5 'Bold')
+    $ctx.flash.Visible = $false
+    $close = New-FlatButton 'Kapat' $true
+    $close.AutoSize = $false; $close.Size = New-Object Drawing.Size(120, 38); $close.Location = New-Object Drawing.Point((690 - 30 - 120), 11)
+    $close.Add_Click({ param($s, $e) $s.FindForm().Close() })
+    $bar.Controls.AddRange(@($ctx.flash, $close))
+    $f.CancelButton = $close
+    $right.Controls.AddRange(@($host1, $bar))
+
+    # Sol gezinme listesi
+    $nav = New-Object Windows.Forms.Panel
+    $nav.Dock = 'Left'; $nav.Width = 210; $nav.BackColor = [Drawing.Color]::FromArgb(7, 16, 30)
+    $nav.Controls.Add((New-Label 'Ayarlar' 24 22 $UiText (New-Font 17 'Bold')))
+    $y = 78
+    foreach ($n in $SettingsPageNames) {
+        $b = New-NavButton $n $y; $y += 46
+        $b.Add_Click({ param($s, $e) Select-SettingsPage ($s.FindForm().Tag) $s.Name })
+        $nav.Controls.Add($b); $ctx.nav[$n] = $b
+    }
+    $f.Controls.AddRange(@($right, $nav))
+
+    # Zamanlayicilar
+    $ctx.flashTimer = New-Object Windows.Forms.Timer
+    $ctx.flashTimer.Interval = 2200; $ctx.flashTimer.Tag = $ctx
+    $ctx.flashTimer.Add_Tick({ param($s, $e) $s.Stop(); $s.Tag.flash.Visible = $false })
+    $ctx.updTimer = New-Object Windows.Forms.Timer
+    $ctx.updTimer.Interval = 1000; $ctx.updTimer.Tag = $ctx
+    $ctx.updTimer.Add_Tick({
+        param($s, $e)
+        $c = $s.Tag
+        if (-not $c.updProc -or -not $c.updProc.HasExited) { return }
+        $s.Stop()
+        $msg = ''
+        try {
+            if (Test-Path -LiteralPath $c.updOut) {
+                $lines = @((Get-Content -LiteralPath $c.updOut -Raw -Encoding UTF8) -split "`r?`n" | ForEach-Object { $_.Trim([char]0xFEFF).Trim() } | Where-Object { $_ })
+                if ($lines) { $msg = $lines[-1] }
+                Remove-Item -LiteralPath $c.updOut -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        $c.updProc = $null
+        Complete-DbUpdate $c $msg
+    })
+    $ctx.guardTimer = New-Object Windows.Forms.Timer
+    $ctx.guardTimer.Interval = 1500; $ctx.guardTimer.Tag = $ctx
+    $ctx.guardTimer.Add_Tick({
+        param($s, $e)
+        $c = $s.Tag
+        if (-not $c.guardProc -or -not $c.guardProc.HasExited) { return }
+        $s.Stop()
+        $code = $null
+        try { $code = $c.guardProc.ExitCode } catch { }
+        $c.guardProc = $null
+        Update-SettingsGuardPage $c
+        $note = Get-GuardSetupNote $code
+        if ($note) { [Windows.Forms.MessageBox]::Show($c.form, $note, 'Cortmed Security') | Out-Null }
+    })
+    $f.Add_FormClosed({
+        param($s, $e)
+        foreach ($t in @($s.Tag.flashTimer, $s.Tag.updTimer, $s.Tag.guardTimer)) { if ($t) { $t.Stop(); $t.Dispose() } }
+    })
+
+    # Sayfalar
+    $subs = @{
+        'Koruma' = 'Cortmed''in sizi nasıl koruyacağını seçin. Değişiklikler hemen kaydedilir.'
+        'Davranış bekçisi' = 'Şüpheli davranan programları çalışırken durdurur ve size sorar.'
+        'Veritabanı' = 'Bilinen virüslerin listesi her gün kendiliğinden güncellenir.'
+        'Güvenilir dosyalar' = 'Güvendiğinizi söylediğiniz dosyalar için Cortmed uyarı vermez.'
+        'Karantina' = 'Karantinaya alınan dosyalar açılamayacakları bir klasörde bekler.'
+        'Gelişmiş' = 'Çoğu kişinin buraya bakması gerekmez.'
+        'Hakkında' = ''
+    }
+    foreach ($n in $SettingsPageNames) {
+        $pg = New-SettingsPage $n $subs[$n]
+        $ctx.pages[$n] = $pg; $host1.Controls.Add($pg)
+    }
+    Build-SettingsKoruma $ctx $ctx.pages['Koruma'] $cfg
+    Build-SettingsGuard $ctx $ctx.pages['Davranış bekçisi']
+    Build-SettingsDb $ctx $ctx.pages['Veritabanı'] $cfg
+    Build-SettingsTrusted $ctx $ctx.pages['Güvenilir dosyalar']
+    Build-SettingsQuarantine $ctx $ctx.pages['Karantina']
+    Build-SettingsAdvanced $ctx $ctx.pages['Gelişmiş'] $cfg
+    Build-SettingsAbout $ctx $ctx.pages['Hakkında']
+    Select-SettingsPage $ctx 'Koruma'
+    return $f
+}
+
+function Show-Settings($owner) {
+    $f = New-SettingsForm
     [void]$f.ShowDialog($owner)
 }
 
@@ -2494,26 +3020,8 @@ function Show-Panel {
                 } catch { }
             }
             'guard' {
-                $svcExists = [bool](Get-Service CortmedGuard -ErrorAction SilentlyContinue)
-                $cmdInfo = Get-GuardSetupCommand $svcExists
-                if ($cmdInfo.missing) {
-                    [Windows.Forms.MessageBox]::Show('Davranış bekçisinin kurulum dosyaları bulunamadı. Cortmed Security''yi indirdiğiniz paketten yeniden kurup tekrar deneyin.', 'Cortmed Security') | Out-Null
-                    return
-                }
-                $setup = $cmdInfo.script
-                $a = [Windows.Forms.MessageBox]::Show(
-                    "Davranış bekçisi açılacak. Şüpheli davranan bir programı çalışırken durdurur ve ne yapılacağını size sorar.`n`nWindows bir onay penceresi gösterecek. Devam edilsin mi?",
-                    'Davranış bekçisini açın', 'YesNo', 'Question')
-                if ($a -ne 'Yes') { return }
-                # Dogrudan yonetici olarak (UAC) baslatilir: onay reddedilirse Start-Process hata verir ve hicbir sey olmaz;
-                # boylece cikis kodu yalnizca gercek kurulum sonucunu gosterir. 64 bit PowerShell (Program Files x86 olmasin).
-                $psDir = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) { Join-Path $env:windir 'Sysnative' } else { [Environment]::SystemDirectory }
-                try {
-                    $proc = Start-Process (Join-Path $psDir 'WindowsPowerShell\v1.0\powershell.exe') -Verb RunAs -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
-                        '-File', ('"{0}"' -f $setup), '-Source', ('"{0}"' -f $cmdInfo.source), '-Elevated')
-                    # Tutamac hemen alinir; yoksa surec bitince ExitCode okunamaz
-                    if ($proc) { $null = $proc.Handle; $state.guardSetup = $proc }
-                } catch { }
+                $gp = Start-GuardSetup
+                if ($gp) { $state.guardSetup = $gp }
             }
             'updates' { Start-Process 'ms-settings:windowsupdate' }
             'account' { Start-Process 'ms-settings:otherusers' }
