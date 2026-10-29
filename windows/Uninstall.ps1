@@ -67,4 +67,5 @@ if ($left) {
 } else {
     Write-Host 'Cortmed Security kaldırıldı.'
 }
+Write-Host 'Tarayıcınıza eklediğiniz Cortmed eklentisini de kaldırın: chrome://extensions ya da edge://extensions'
 Write-Host 'Not: "Tek tıkla aç" ile açılan Windows korumaları açık kalır; geri almak isterseniz kaldırmadan önce Harden.ps1 -Undo çalıştırın.'

@@ -1,4 +1,4 @@
-# Cortmed tarayici koprusunun (native messaging host) bildirim dosyasini olusturur.
+﻿# Cortmed tarayici koprusunun (native messaging host) bildirim dosyasini olusturur.
 # Install.ps1 ve testler bu dosyayi nokta ile yukler; kendi basina hicbir sey calistirmaz.
 
 # JSON metin degeri icin kacis: ters bolu, tirnak ve denetim karakterleri

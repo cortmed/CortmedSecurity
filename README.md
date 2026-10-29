@@ -182,15 +182,20 @@ Kontroller sınırlıdır: bir sitede 10 dakikada en fazla 5 kontrol, 24 saatte 
 
 `Kur.bat` her şeyi hazırlar. Panelde **Tarayıcı korumasını ekleyin** kartındaki **Nasıl eklenir?** rehberi de adımları gösterir.
 
+Klasör yolu: `%LOCALAPPDATA%\CortmedSecurity\browser`. Bu klasör gizlidir, pencerede gezinerek bulunamaz;
+yolu kopyalayın (rehberdeki **Klasör yolunu kopyala** düğmesi tam yolu kopyalar).
+
 **Chrome:**
 1. Adres çubuğuna `chrome://extensions` yazın.
 2. Sağ üstteki **Geliştirici modu**'nu açın.
-3. **Paketlenmemiş öğe yükle**'ye basın ve `%LOCALAPPDATA%\CortmedSecurity\browser` klasörünü seçin.
+3. **Paketlenmemiş öğe yükle**'ye basın.
+4. Açılan pencerede üstteki adres çubuğuna kopyaladığınız yolu yapıştırın, Enter'a basın, sonra **Klasör seç** düğmesine basın.
 
 **Edge:**
 1. Adres çubuğuna `edge://extensions` yazın.
 2. Sol alttaki **Geliştirici modu**'nu açın.
-3. **Paketten çıkarılmışı yükle**'ye basın ve aynı klasörü (`%LOCALAPPDATA%\CortmedSecurity\browser`) seçin.
+3. **Paketten çıkarılmışı yükle**'ye basın.
+4. Açılan pencerede üstteki adres çubuğuna kopyaladığınız yolu yapıştırın, Enter'a basın, sonra **Klasör seç** düğmesine basın.
 
 ### Edge Add-ons mağazası (sonraki, isteğe bağlı adım)
 
@@ -201,9 +206,13 @@ Bakım yapacak kişi için not: yayımlandıktan sonra mağaza eklentiye **farkl
 
 1. İki farklı deneme sitesinde aynı deneme şifresini kullanın. İkincisinde **sarı kart** çıkmalı.
 2. Bir giriş formuna `password123` yazın. **Kırmızı "sızdırılmış" kartı** çıkmalı.
-3. discord.com'u açın. MFA kartı **bir kez** çıkmalı; **Sonra**'ya basarsanız 7 gün sonra tekrar gelir.
-4. eicar.org'dan EICAR deneme dosyasını indirin. "Tehlikeli olabilir" bildirimi gelmeli.
-5. Panelde **Tarayıcı koruması açık** yazmalı.
+3. Bir giriş formunun şifre alanına 6 haneli bir banka şifresi (örneğin `482913`) yazıp gönderin. **Hiçbir kart çıkmamalı.**
+4. Gönderildikten sonra başka bir sayfaya yönlendiren bir girişte `password123` kullanın. Kart **bir sonraki sayfada** çıkmalı.
+5. discord.com'u açın. MFA kartı **bir kez** çıkmalı; **Sonra**'ya basarsanız 7 gün sonra tekrar gelir.
+6. eicar.org'dan `eicar_com.zip` dosyasını indirin (zip taranır; `eicar.com` taranmaz). "Tehlikeli olabilir" bildirimi gelmeli.
+   Defender silerse bu normaldir; Cortmed bildirimi yine de gelmeli.
+7. İmzasız küçük bir program (`.exe`) indirin. Başlığı **"Tanınmayan program"** olan **sarı** bir bildirim gelmeli.
+8. Panelde **Tarayıcı koruması açık** yazmalı.
 
 Otomatik kontrol: `tests/guard/run.ps1`, eklenti testlerini Edge'in başsız (headless) modunda çalıştırır.
 

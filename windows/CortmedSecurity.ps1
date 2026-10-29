@@ -2903,11 +2903,14 @@ function Set-BrowserGuideBrowser($f, [string]$b) {
     $b1.Add_Click({ param($s, $e) Copy-GuideText $s }); $steps.Controls.Add($b1)
     $steps.Controls.Add((New-Label $s2 44 86 $UiText $f1 540))
     $steps.Controls.Add((New-Label $s3 44 138 $UiText $f1 540))
-    $steps.Controls.Add((New-Label 'Şu klasörü seçin:' 44 190 $UiText $f1 540))
-    $pl = New-Label $f.Tag.folder 44 220 $UiAccent (New-Object Drawing.Font('Consolas', 10)) 540
+    # %LOCALAPPDATA% gizli klasor: kullanici gezinemez, yolu pencerenin adres cubuguna yapistirir
+    $l4 = New-Label 'Açılan pencerede üstteki adres çubuğuna kopyaladığınız yolu yapıştırın, Enter''a basın, sonra Klasör seç düğmesine basın.' 44 190 $UiText $f1 540
+    $steps.Controls.Add($l4)
+    $py = 190 + $l4.GetPreferredSize((New-Object Drawing.Size(0, 0))).Height + 6
+    $pl = New-Label $f.Tag.folder 44 $py $UiAccent (New-Object Drawing.Font('Consolas', 10)) 540
     $steps.Controls.Add($pl)
     $ph = $pl.GetPreferredSize((New-Object Drawing.Size(0, 0))).Height
-    $b4 = New-FlatButton 'Klasör yolunu kopyala'; $b4.Height = 34; $b4.Location = New-Object Drawing.Point(44, (220 + $ph + 8)); $b4.Tag = $f.Tag.folder
+    $b4 = New-FlatButton 'Klasör yolunu kopyala'; $b4.Height = 34; $b4.Location = New-Object Drawing.Point(44, ($py + $ph + 8)); $b4.Tag = $f.Tag.folder
     $b4.Add_Click({ param($s, $e) Copy-GuideText $s }); $steps.Controls.Add($b4)
 }
 

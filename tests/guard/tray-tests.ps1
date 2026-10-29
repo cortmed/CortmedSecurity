@@ -395,7 +395,12 @@ try {
             $s3 = if ($b -eq 'Chrome') { 'Paketlenmemiş öğe yükle düğmesine basın.' } else { 'Paketten çıkarılmışı yükle düğmesine basın.' }
             $s2 = if ($b -eq 'Chrome') { 'Sağ üstteki Geliştirici modu düğmesini açın.' } else { 'Sol alttaki Geliştirici modu düğmesini açın.' }
             TCheck "rehber $b : adres" ($gt -contains $addr) ($gt -join '|')
-            TCheck "rehber $b : 4 adim metni" (($gt -contains 'Tarayıcınızda şu adresi açın:') -and ($gt -contains $s2) -and ($gt -contains $s3) -and ($gt -contains 'Şu klasörü seçin:')) ($gt -join '|')
+            $s4 = 'Açılan pencerede üstteki adres çubuğuna kopyaladığınız yolu yapıştırın, Enter''a basın, sonra Klasör seç düğmesine basın.'
+            TCheck "rehber $b : 4 adim metni" (($gt -contains 'Tarayıcınızda şu adresi açın:') -and ($gt -contains $s2) -and ($gt -contains $s3) -and ($gt -contains $s4)) ($gt -join '|')
+            # Gizli %LOCALAPPDATA% icin yol yapistirilir: uzun 4. adim metni klasor yolunun ustune binmez
+            $l4 = @(All-Controls $gf | Where-Object { $_.Text -eq $s4 })[0]
+            $lp = @(All-Controls $gf | Where-Object { $_ -is [Windows.Forms.Label] -and $_.Text -eq $folder })[0]
+            TCheck "rehber $b : 4. adim yolun ustune binmez" ($l4 -and $lp -and ($l4.Top + $l4.PreferredHeight) -le $lp.Top -and ($lp.Top + $lp.PreferredHeight) -le $gf.Tag.steps.Height) "$($l4.Top)+$($l4.PreferredHeight) / $($lp.Top)"
             TCheck "rehber $b : genisletilmis klasor yolu" ($gt -contains $folder -and $folder -notmatch '%') $folder
             TCheck "rehber $b : Kopyala dugmeleri" ((@(All-Controls $gf | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Kopyala' }).Count -eq 1) -and
                 (Btn $gf 'Klasör yolunu kopyala')) ''

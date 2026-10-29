@@ -414,6 +414,13 @@ foreach ($leaf in 'Install.ps1', 'Uninstall.ps1', 'CortmedSecurity.ps1') {
     $lp = Join-Path $root "windows\$leaf"
     Check "$leaf UTF-8 BOM" ((@([IO.File]::ReadAllBytes($lp) | Select-Object -First 3) -join ',') -eq '239,187,191') ''
 }
+# Turkce metinli kopru manifest yardimcisi da BOM'lu (PS 5.1 aksi halde bozuk gosterir)
+$nhmPath = Join-Path $root 'windows\browser\NativeHostManifest.ps1'
+Check 'NativeHostManifest.ps1 UTF-8 BOM' ((@([IO.File]::ReadAllBytes($nhmPath) | Select-Object -First 3) -join ',') -eq '239,187,191') ''
+# Install.ps1 depodaki diger kurulum betikleri gibi CRLF
+$instRaw = [IO.File]::ReadAllText((Join-Path $root 'windows\Install.ps1'))
+Check 'Install.ps1 CRLF satir sonlari' (([regex]::Matches($instRaw, '(?<!\r)\n')).Count -eq 0 -and $instRaw.Contains("`r`n")) ''
+Check 'Uninstall.ps1 eklentiyi tarayicidan kaldirmayi hatirlatir' ($unin.Contains('Tarayıcınıza eklediğiniz Cortmed eklentisini de kaldırın: chrome://extensions ya da edge://extensions')) ''
 $nhm = Join-Path $root 'windows\browser\NativeHostManifest.ps1'
 $nhmOk = $false; $nhmWhy = 'NativeHostManifest.ps1 yok'
 if (Test-Path $nhm) {
