@@ -130,12 +130,30 @@ Bu program kurulum paketinde yok; kendiniz derlersiniz.
 3. Kopyaladığınız programa çift tıklayın. **5 saniye içinde** bir soru penceresi çıkmalı ve iki neden yazmalı:
    - Kendini açılışa eklemeye çalıştı.
    - Başka bir programın (Discord/tarayıcı) dosyalarını değiştirmeye çalıştı.
-4. **Programı kapat**'ı seçin. Program kapanmalı. Panelin **Tehditler** sekmesinde bir bulgu görünmeli.
+4. **Programı kapat**'ı seçin. Program kapanmalı. Panelin **Önerilerimiz** sekmesinde, **Durdurulan programlar** başlığı altında bir bulgu görünmeli.
 5. Program temizlik yapamadan kapandığı için izleri elle silin: `CortmedBehaviorTest.exe --cleanup`
    (Açılıştaki `CortmedTest` değerini ve Temp altındaki `CortmedFakeDiscord` klasörünü siler.)
 
+Soruda **İzin ver** seçilirse aynı program (aynı dosya) bir daha sorulmaz: dosyanın parmak izi izin listesine eklenir.
+Denemeyi tekrarlamak için **Programı kapat**'ı seçin.
+
 **Yanlış alarm denemesi:** Discord, Steam ve Chrome'u kurun ya da güncelleyin. `C:\ProgramData\Cortmed\guard.log` içinde
-"Ağaç donduruldu" (Freeze) satırı **olmamalı**.
+"Ağaç donduruldu" (Freeze) satırı da, "Şüpheli davranış" satırı da **olmamalı**:
+
+```powershell
+Select-String -Path C:\ProgramData\Cortmed\guard.log -Pattern 'Ağaç donduruldu', 'Şüpheli davranış'
+```
+
+**Windows Sandbox kontrol listesi** (kurulumdan sonra, yukarıdaki adımlara ek olarak):
+- **Edge'den indirilen deneme programı:** `CortmedBehaviorTest.exe` dosyasını Edge ile indirin (örneğin yerel bir klasörden
+  `file:///` adresiyle açıp kaydedin) ve Edge'in indirme çubuğundaki **Aç**'a tıklayın. Soru penceresi `CortmedBehaviorTest.exe`'yi
+  adlandırmalı, `msedge.exe`'yi değil; **Programı kapat** Edge'i kapatmamalı.
+- **OneDrive eşitleme:** OneDrive'da oturum açın ve 200 dosyalık bir klasörü Masaüstü'ne eşitleyin. `guard.log` içinde
+  "Şüpheli davranış" ya da "Ağaç donduruldu" satırı olmamalı.
+- **Etkin Sysmon ayarı:** yönetici PowerShell'de `C:\Windows\Sysmon64.exe -c` çalıştırın. Çıktıda ProcessAccess kuralı
+  `lsass.exe` ile birlikte `GrantedAccess` maskelerini (0x1010, 0x1410, 0x1fffff…) göstermeli.
+
+**Birden fazla kullanıcı:** Bilgisayarda aynı anda birden fazla kullanıcı oturumu açıksa sorular ilk oturumdaki Cortmed'e gider.
 
 **Performans denemesi:** 10 dakika normal kullanımdan sonra `Get-Process CortmedGuard` çalıştırın.
 Ortalama işlemci kullanımı %1'in altında, bellek (çalışma kümesi) 80 MB'ın altında olmalı.
