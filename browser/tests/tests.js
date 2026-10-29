@@ -179,6 +179,18 @@ async function backgroundLogic(L, assertEq) {
   r = await L.handlePwSubmit({ site: 'example.com', password: '' }, { store: st, fetch: ff, now: function () { return T; } });
   assertEq('pw empty', [r, ff.calls.length, st.writes], [{ reuse: [], leaked: 0 }, 0, 0]);
 
+  // Banka şifresi / SMS kodu (yalnızca rakam, 8 haneye kadar): hiç kontrol edilmez, hiçbir şey yazılmaz
+  st = fakeStore({ pwIndex: { fpBank: ['ziraatbank.com.tr'] } }); ff = fakeFetch('');
+  for (const pin of ['123456', '0', '12345678']) {
+    r = await L.handlePwSubmit({ site: 'ziraatbank.com.tr', password: pin }, { store: st, fetch: ff, now: function () { return T; } });
+    assertEq('pw digits ' + pin.length + ' skipped', [r, ff.calls.length, st.writes], [{ reuse: [], leaked: 0 }, 0, 0]);
+  }
+  assertEq('pw digits index untouched', st.data.pwIndex, { fpBank: ['ziraatbank.com.tr'] });
+  r = await L.handlePwSubmit({ site: 'ziraatbank.com.tr', password: '123456789' }, { store: st, fetch: ff, now: function () { return T; } });
+  assertEq('pw 9 digits checked', ff.calls.length, 1);
+  r = await L.handlePwSubmit({ site: 'ziraatbank.com.tr', password: '12345a' }, { store: fakeStore(), fetch: ff, now: function () { return T; } });
+  assertEq('pw digits+letter checked', ff.calls.length, 2);
+
   // "Bu site için bir daha gösterme"
   st = fakeStore(); ff = fakeFetch(miss);
   const d2 = { store: st, fetch: ff, now: function () { return T; } };
@@ -393,6 +405,11 @@ async function routerTests(L, assertEq, sites, miss, PWSFX) {
   await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://evil.com/'), d);
   await L.routeMessage({ type: 'cardsShown' }, snd('https://evil.com/'), d);
   assertEq('route cardsShown clears', await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/'), d), null);
+
+  // Rakam şifre yönlendiricide de hız sınırına ve bekleyen karta sayılmaz
+  d = mk();
+  r = await L.routeMessage({ type: 'pwSubmit', password: '654321' }, snd('https://www.ziraatbank.com.tr/'), d);
+  assertEq('route digits skipped', [r, d.fetch.calls.length, d.store.writes, d.session.writes], [{ reuse: [], leaked: 0 }, 0, 0, 0]);
 
   // Hiz siniri: site basina 10 dakikada 5
   d = mk();

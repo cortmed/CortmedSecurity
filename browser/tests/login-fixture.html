@@ -40,12 +40,24 @@
   <button id="formBtn" type="submit">Tamam</button>
 </form>
 
+<!-- Banka girisi: 6 haneli sifre; SMS kodu alani -->
+<form id="pinForm" action="/nowhere">
+  <input id="pin" type="password" inputmode="numeric" maxlength="6">
+  <button id="pinBtn" type="submit">Giriş</button>
+</form>
+<form id="otpForm" action="/nowhere">
+  <input id="otp" type="password" autocomplete="one-time-code">
+  <button id="otpBtn" type="submit">Onayla</button>
+</form>
+
 <!-- Sifre alani olmayan baska bir bolum -->
 <section id="other"><div><p><button id="otherBtn" type="button">Giriş</button></p></div></section>
 
 <script>
   document.getElementById('loginBtn').addEventListener('click', function () { /* sayfanin kendi fetch girisi */ });
   document.getElementById('realForm').addEventListener('submit', function (e) { e.preventDefault(); });
+  document.getElementById('pinForm').addEventListener('submit', function (e) { e.preventDefault(); });
+  document.getElementById('otpForm').addEventListener('submit', function (e) { e.preventDefault(); });
 </script>
 <script src="content-tests.js"></script>
 </body>

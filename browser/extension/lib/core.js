@@ -162,6 +162,10 @@
     return out;
   }
 
+  // Banka sifresi ve SMS kodu: yalnizca rakam, en fazla 8 hane. Hic kontrol edilmez (HIBP'de hemen hepsi var).
+  const DIGITS_RX = /^\d{1,8}$/;
+  function skipSecret(password) { return DIGITS_RX.test(password); }
+
   // msg: {site, password}. Sifre yalnizca burada, iz ve SHA-1 icin kullanilir; hicbir yere yazilmaz.
   // deps.serial: depo oku-degistir-yaz adimlarini siraya koyar. Ozet ve HIBP sorgusu sira disinda calisir.
   async function handlePwSubmit(msg, deps) {
@@ -169,7 +173,7 @@
     const run = deps.serial || direct;
     const site = etld1(msg && msg.site);
     let password = msg && typeof msg.password === 'string' ? msg.password : '';
-    if (!site || !password) return empty;
+    if (!site || !password || skipSecret(password)) return empty;
     const salt = await run(function () { return getSalt(deps); });
     const fp = await fingerprint(password, salt);
     const sha = await sha1Hex(password);
@@ -338,7 +342,7 @@
       case 'pwSubmit': {
         let password = typeof msg.password === 'string' ? msg.password : '';
         msg.password = null;
-        if (!password) return Promise.resolve(empty);
+        if (!password || skipSecret(password)) { password = null; return Promise.resolve(empty); }
         return (async function () {
           const allowed = await run(function () { return rateAllow(deps, site); });
           if (!allowed) { password = null; return empty; }
@@ -387,6 +391,6 @@
     handlePwSubmit: handlePwSubmit, handleReuseMute: handleReuseMute, findMfaSite: findMfaSite,
     handleMfaCheck: handleMfaCheck, handleMfaAnswer: handleMfaAnswer, mfaLabel: mfaLabel,
     downloadNotice: downloadNotice, downloadOutcome: downloadOutcome,
-    senderHost: senderHost, routeMessage: routeMessage
+    senderHost: senderHost, routeMessage: routeMessage, skipSecret: skipSecret
   };
 })(self);

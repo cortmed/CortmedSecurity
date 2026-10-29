@@ -215,6 +215,21 @@
     const rc = cards('reuse')[0];
     assertEq('reuse long list', !!rc && rc.textContent.indexOf('başka 7 sitede de kullanıyorsunuz: a.com, b.com, c.com, d.com, e.com ve 2 site daha. Bir site') >= 0, true);
 
+    // Banka sifresi (6 rakam) ve SMS kodu alani: hic gonderilmez
+    const before = pwCount();
+    type($('pin'), '123456');
+    $('pinBtn').click(); enter($('pin')); $('pinForm').requestSubmit();
+    assertEq('6-digit PIN sends nothing', pwCount(), before);
+    type($('pin'), '12345678');
+    $('pinBtn').click();
+    assertEq('8-digit PIN sends nothing', pwCount(), before);
+    type($('otp'), 'Kod-Abc-91');
+    $('otpBtn').click(); enter($('otp'));
+    assertEq('one-time-code field sends nothing', pwCount(), before);
+    type($('pin'), '123456789');
+    $('pinBtn').click();
+    assertEq('9 digits still checked', pwCount(), before + 1);
+
     // Sayfa dunyasindan kapi yalnizca 127.0.0.1'de anlam tasir (ayni betik, kosul kodda)
     assertEq('fixture served from 127.0.0.1', location.hostname, '127.0.0.1');
     assertEq('content.js loaded before body existed', window.__bodyAtStart, false);

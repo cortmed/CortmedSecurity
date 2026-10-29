@@ -203,10 +203,16 @@
     remember(t);
   }
 
+  // Banka sifresi / SMS kodu: yalnizca rakam ve en fazla 8 hane ya da one-time-code alani. Hic gonderilmez.
+  function skipField(field) {
+    const ac = String(field.getAttribute('autocomplete') || '').toLowerCase();
+    return ac.indexOf('one-time-code') >= 0 || /^\d{1,8}$/.test(field.value);
+  }
+
   let last = null, lastTimer = 0;
   function attempt(field) {
     const value = field && field.value;
-    if (!value || !userTyped(field)) return;
+    if (!value || !userTyped(field) || skipField(field)) return;
     const t = Date.now();
     if (last && last.field === field && last.value === value && t - last.t < DEDUPE_MS) return;
     last = { field: field, value: value, t: t };
