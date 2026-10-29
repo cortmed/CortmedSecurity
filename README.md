@@ -162,6 +162,53 @@ Otomatik kontrol: `tests\guard\run.ps1`, aynı olayları bekçiye sahte olarak o
 
 ---
 
+## 🌐 Tarayıcı koruması
+
+Chrome ve Edge için küçük bir eklenti. Tarayıcıda şifrelerinizi korur, indirdiğiniz dosyaları da Cortmed'e taramaya gönderir.
+
+### Ne yapar?
+
+- Aynı şifreyi farklı sitelerde kullandığınızda sizi uyarır.
+- Sızdırılmış şifreleri uyarır. Bunun için Have I Been Pwned'in k-anonimlik kontrolünü kullanır: şifrenizin SHA-1 özetinin sadece ilk 5 karakteri gönderilir.
+- 20 sitede iki adımlı doğrulama (MFA) hatırlatma kartı gösterir. Açılır pencerede **Hesaplarım** listesi de vardır.
+- İndirdiğiniz dosyaları Cortmed'e taratır. Bunun için Cortmed Security'nin kurulu olması gerekir.
+
+### Gizlilik
+
+**Şifreniz bilgisayarınızdan çıkmaz.** Bilgisayarda sadece yavaş hesaplanan ve tuzlanmış bir parmak izi saklanır; şifrenin kendisi saklanmaz.
+Kontroller sınırlıdır: bir sitede 10 dakikada en fazla 5 kontrol, 24 saatte en fazla 30 farklı şifre.
+
+### Nasıl eklenir?
+
+`Kur.bat` her şeyi hazırlar. Panelde **Tarayıcı korumasını ekleyin** kartındaki **Nasıl eklenir?** rehberi de adımları gösterir.
+
+**Chrome:**
+1. Adres çubuğuna `chrome://extensions` yazın.
+2. Sağ üstteki **Geliştirici modu**'nu açın.
+3. **Paketlenmemiş öğe yükle**'ye basın ve `%LOCALAPPDATA%\CortmedSecurity\browser` klasörünü seçin.
+
+**Edge:**
+1. Adres çubuğuna `edge://extensions` yazın.
+2. Sol alttaki **Geliştirici modu**'nu açın.
+3. **Paketten çıkarılmışı yükle**'ye basın ve aynı klasörü (`%LOCALAPPDATA%\CortmedSecurity\browser`) seçin.
+
+### Edge Add-ons mağazası (sonraki, isteğe bağlı adım)
+
+Eklentiyi ileride Edge Add-ons mağazasına koyabilirsiniz; bu adımı kendi Microsoft hesabınızla yaparsınız ve ücretsizdir.
+Bakım yapacak kişi için not: yayımlandıktan sonra mağaza eklentiye **farklı bir eklenti kimliği** verir. Bu kimlik `allowed_origins` listesine eklenmelidir.
+
+### Windows Sandbox kontrol listesi
+
+1. İki farklı deneme sitesinde aynı deneme şifresini kullanın. İkincisinde **sarı kart** çıkmalı.
+2. Bir giriş formuna `password123` yazın. **Kırmızı "sızdırılmış" kartı** çıkmalı.
+3. discord.com'u açın. MFA kartı **bir kez** çıkmalı; **Sonra**'ya basarsanız 7 gün sonra tekrar gelir.
+4. eicar.org'dan EICAR deneme dosyasını indirin. "Tehlikeli olabilir" bildirimi gelmeli.
+5. Panelde **Tarayıcı koruması açık** yazmalı.
+
+Otomatik kontrol: `tests/guard/run.ps1`, eklenti testlerini Edge'in başsız (headless) modunda çalıştırır.
+
+---
+
 ## 🛠️ Geliştirici notları
 
 ```
