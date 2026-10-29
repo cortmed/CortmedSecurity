@@ -28,8 +28,7 @@ namespace Cortmed.Guard
         {
             @"{System32}\smss.exe", @"{System32}\csrss.exe", @"{System32}\wininit.exe", @"{System32}\winlogon.exe",
             @"{System32}\services.exe", @"{System32}\lsass.exe", @"{Windows}\explorer.exe", @"{System32}\dwm.exe",
-            @"{ProgramFiles}\Cortmed\CortmedGuard.exe",
-            @"{Users}\*\AppData\Local\CortmedSecurity\CortmedSecurity.exe"
+            @"{ProgramFiles}\Cortmed\CortmedGuard.exe"
         };
 
         // Surecin tam imaj yolu (QueryFullProcessImageName); okunamazsa null.

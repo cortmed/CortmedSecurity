@@ -1097,6 +1097,17 @@ function Get-ProgramFilesDir {
     return $pf
 }
 
+# Windows klasoru ya da Program Files altinda mi (karantina teklif edilmez, otomatik karantina atlanir)
+function Test-GuardSystemPath([string]$path) {
+    if (-not $path) { return $false }
+    $roots = @([Environment]::GetFolderPath('Windows'), [Environment]::GetFolderPath('ProgramFiles'),
+        [Environment]::GetFolderPath('ProgramFilesX86'), (Get-ProgramFilesDir)) | Where-Object { $_ }
+    foreach ($r in $roots) {
+        if ($path.StartsWith($r.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 # "Bekciyi ac" dugmesinin yukseltecegi kurulum betigi.
 #   Hizmet varsa (onarim): YALNIZCA Program Files\Cortmed'deki, kullanicinin yazamadigi kopya ve kaynaklari;
 #   o kopya yoksa (eski kurulum) kullanici klasorundeki kopya yukseltilmez, missing = $true.
@@ -1484,7 +1495,8 @@ function New-ReportForm($finding) {
         [void]$bar.Controls.Add($open)
     }
     # Davranis bekcisi bulgusu (durdurulmayan ya da kapatilan program): dosyayi mevcut karantina islemiyle kaldir
-    if ([string]$finding.key -like 'behavior:*' -and $finding.path -and (Test-Path -LiteralPath $finding.path -PathType Leaf)) {
+    if ([string]$finding.key -like 'behavior:*' -and $finding.path -and -not (Test-GuardSystemPath ([string]$finding.path)) -and
+        (Test-Path -LiteralPath $finding.path -PathType Leaf)) {
         $quar = New-FlatButton 'Karantinaya al'
         $quar.Add_Click({
             $a = [Windows.Forms.MessageBox]::Show(
@@ -1634,7 +1646,8 @@ function Close-GuardPrompt($state, [string]$id, [scriptblock]$notify) {
 # Kurulan pencereyi dondurur (gosterilmezse -NoShow), aksi halde $null.
 $DefaultGuardQuarantine = {
     param($path)
-    if ((Get-Config).autoQuarantine -eq $true -and $path -and (Test-Path -LiteralPath $path -PathType Leaf)) { return (Invoke-Quarantine $path) }
+    if ((Get-Config).autoQuarantine -eq $true -and $path -and -not (Test-GuardSystemPath ([string]$path)) -and
+        (Test-Path -LiteralPath $path -PathType Leaf)) { return (Invoke-Quarantine $path) }
     return $false
 }
 function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [scriptblock]$Notify = $null, $Now = $null, [switch]$NoShow,

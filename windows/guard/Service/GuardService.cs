@@ -36,6 +36,8 @@ namespace Cortmed.Guard
         public void ResumeTree(List<int> pids) { ProcessControl.ResumeTree(pids); }
         public void KillTree(List<int> pids) { ProcessControl.KillTree(pids); }
 
+        public int SessionOf(int pid) { return ProcessControl.SessionOf(pid); }
+
         public long StartTimeOf(int pid)
         {
             try
@@ -309,6 +311,7 @@ namespace Cortmed.Guard
         public void ResumeTree(List<int> pids) { }
         public void KillTree(List<int> pids) { }
         public long StartTimeOf(int pid) { return 1; }
+        public int SessionOf(int pid) { return 1; }
     }
 
     class NoSink : IPromptSink

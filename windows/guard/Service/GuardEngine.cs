@@ -20,6 +20,8 @@ namespace Cortmed.Guard
         void KillTree(List<int> pids);
         // Surecin baslangic zamani (UTC Ticks); surec yoksa ya da okunamazsa 0. Pid yeniden kullanimi icin.
         long StartTimeOf(int pid);
+        // Surecin oturum numarasi; okunamazsa -1. Oturum 0 (hizmetler) korumalidir.
+        int SessionOf(int pid);
     }
 
     // Tepsiye soru gonderen kanal. Send: true yalnizca soru istemciye tamamen ulastiysa.
@@ -370,6 +372,14 @@ namespace Cortmed.Guard
 
             foreach (var hit in _classifier.Classify(e))
             {
+                // Ebeveyne yazilan isabet (gizli betik, schtasks, Defender komutu): ebeveyn kok baslatan ise
+                // (Windows hizmet sureci, explorer, baslatici) cocuk kendi agacini baslatmistir; isabet cocugundur.
+                if (e.EventId == 1 && hit.Pid == e.ParentPid && hit.Pid != e.Pid)
+                {
+                    string parentImg = _tree.ImageOf(e.ParentPid);
+                    if (string.IsNullOrEmpty(parentImg)) parentImg = e.ParentImage;
+                    if (PathRules.IsRootStarter(parentImg, _rules, KnownFolders.Current)) hit.Pid = e.Pid;
+                }
                 int root = _tree.RootOf(hit.Pid);
                 string image = ImageFor(root, e);
                 var d = _board.Add(root, BaseScoreOf(root, image), hit, now);
@@ -474,6 +484,16 @@ namespace Cortmed.Guard
             int root = d.RootPid;
             string reasons = string.Join(" ", d.Reasons);
             if (_byRoot.ContainsKey(root)) return false; // zaten donuk, soru bekliyor
+
+            // Korumali kok (asla dondurulmayan imaj ya da oturum 0): yalnizca guard.log; bulgu, bildirim, soru yok.
+            bool protectedImage = !string.IsNullOrEmpty(image) && ProcessControl.IsProtectedImage(image, _rules);
+            if (protectedImage || _control.SessionOf(root) == 0)
+            {
+                if (WarnScoreRose(root, d.Score))
+                    _log.Write("Korumalı süreç, yalnızca kaydedildi (" + (protectedImage ? "korumalı imaj" : "oturum 0") + ", puan "
+                        + d.Score + "): " + image + " (kök " + root + ") " + reasons);
+                return false;
+            }
 
             string hash = HashOf(root, image);
             if (hash.Length > 0 && _allowed.Contains(hash))

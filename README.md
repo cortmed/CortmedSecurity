@@ -141,7 +141,7 @@ Denemeyi tekrarlamak için **Programı kapat**'ı seçin.
 "Ağaç donduruldu" (Freeze) satırı da, "Şüpheli davranış" satırı da **olmamalı**:
 
 ```powershell
-Select-String -Path C:\ProgramData\Cortmed\guard.log -Pattern 'Ağaç donduruldu', 'Şüpheli davranış'
+Select-String -Path C:\ProgramData\Cortmed\guard.log -Encoding UTF8 -Pattern 'Ağaç donduruldu', 'Şüpheli davranış'
 ```
 
 **Windows Sandbox kontrol listesi** (kurulumdan sonra, yukarıdaki adımlara ek olarak):

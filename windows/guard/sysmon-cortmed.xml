@@ -24,7 +24,7 @@
       <ProcessAccess onmatch="include">
         <Rule name="LsassBellekOkuma" groupRelation="and">
           <TargetImage condition="end with">\lsass.exe</TargetImage>
-          <GrantedAccess condition="is any">0x1010;0x1410;0x1438;0x143a;0x1fffff;0x1f1fff;0x1f3fff;0x40;0x10</GrantedAccess>
+          <GrantedAccess condition="is any">0x1010;0x1410;0x1438;0x143a;0x1fffff;0x1f1fff;0x1f3fff;0x10;0x410;0x147a;0x1418;0x1f0fff;0x1038</GrantedAccess>
         </Rule>
       </ProcessAccess>
     </RuleGroup>

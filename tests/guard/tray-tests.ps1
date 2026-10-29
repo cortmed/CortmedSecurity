@@ -236,6 +236,27 @@ try {
     $rf2 = New-ReportForm ([pscustomobject]@{ key = 'behavior:y'; level = 'YELLOW'; title = 't'; detail = 'd'; path = (Join-Path $work 'yok.exe'); report = 'r' })
     TCheck 'ayrintilar: dosya yoksa Karantinaya al yok' (@(All-Controls $rf2 | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Karantinaya al' }).Count -eq 0) ''
     $rf2.Dispose()
+    # Windows klasoru ve Program Files altindaki dosyalar: Karantinaya al yok (dosya var olsa bile)
+    $sysFile = Join-Path ([Environment]::SystemDirectory) 'svchost.exe'
+    $rf3 = New-ReportForm ([pscustomobject]@{ key = 'behavior:z'; level = 'YELLOW'; title = 't'; detail = 'd'; path = $sysFile; report = 'r' })
+    TCheck 'ayrintilar: Windows klasorundeki dosyada Karantinaya al yok' (@(All-Controls $rf3 | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq 'Karantinaya al' }).Count -eq 0) ''
+    $rf3.Dispose()
+    TCheck 'sistem yolu: Windows ve Program Files' ((Test-GuardSystemPath $sysFile) -and
+        (Test-GuardSystemPath (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'x\y.exe')) -and
+        (Test-GuardSystemPath (Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'x\y.exe')) -and
+        -not (Test-GuardSystemPath $qf) -and -not (Test-GuardSystemPath ([Environment]::GetFolderPath('Windows') + 'x\a.exe'))) ''
+    # Otomatik karantina sistem yollarini atlar (gercek Invoke-Quarantine yerine sahte: sistem dosyasina asla dokunulmaz)
+    $realQ = ${function:Invoke-Quarantine}
+    $sysQ = New-Object Collections.ArrayList
+    ${function:Invoke-Quarantine} = { param($file) [void]$sysQ.Add($file); $true }
+    if ((Get-Command Invoke-Quarantine).ScriptBlock.ToString() -notmatch 'sysQ') { throw 'sahte Invoke-Quarantine yuklenemedi; sistem dosyasi denenmez' }
+    $qcfg = Get-Config; $qcfg.autoQuarantine = $true; Save-Config $qcfg
+    $rq1 = & $DefaultGuardQuarantine $sysFile
+    $rq2 = & $DefaultGuardQuarantine $qf
+    $qcfg.autoQuarantine = $false; Save-Config $qcfg
+    ${function:Invoke-Quarantine} = $realQ
+    TCheck 'otomatik karantina Windows klasorunu atlar' (-not $rq1 -and -not ($sysQ -contains $sysFile)) ($sysQ -join ',')
+    TCheck 'otomatik karantina kullanici dosyasini alir' ($rq2 -and ($sysQ -contains $qf)) ($sysQ -join ',')
     $qsrc = Get-Content (Join-Path $RepoRoot 'windows\CortmedSecurity.ps1') -Raw -Encoding UTF8
     TCheck 'Karantinaya al mevcut Invoke-Quarantine''i kullanir' (@([regex]::Matches($qsrc, 'function Invoke-Quarantine')).Count -eq 1 -and
         $qsrc -match "'Karantinaya al'[\s\S]{0,800}Invoke-Quarantine") ''

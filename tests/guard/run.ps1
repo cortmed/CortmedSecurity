@@ -84,10 +84,13 @@ if ($xml -ne $null) {
     $ga = if ($lr) { $lr.SelectSingleNode("GrantedAccess[@condition='is any']") } else { $null }
     $gaList = if ($ga) { @($ga.InnerText -split ';') } else { @() }
     Check 'sysmon ProcessAccess: lsass + GrantedAccess ayni and kuralinda' ($lr -ne $null -and $lr.SelectSingleNode("TargetImage[.='\lsass.exe']") -ne $null -and $ga -ne $null) ''
-    foreach ($m in '0x1010','0x1410','0x1438','0x143a','0x1fffff','0x1f1fff','0x1f3fff','0x40','0x10') {
+    foreach ($m in '0x1010','0x1410','0x1438','0x143a','0x1fffff','0x1f1fff','0x1f3fff','0x10','0x410','0x147a','0x1418','0x1f0fff','0x1038') {
         Check "sysmon GrantedAccess $m" ($gaList -contains $m) ($gaList -join ';')
     }
     Check 'sysmon GrantedAccess 0x1000 (yalniz sorgu) yok' ($gaList -notcontains '0x1000') ''
+    Check 'sysmon GrantedAccess 0x40 (VM_READ yok) yok' ($gaList -notcontains '0x40') ''
+    $noRead = @($gaList | Where-Object { ([Convert]::ToInt64($_.Substring(2), 16) -band 0x10) -eq 0 })
+    Check 'sysmon GrantedAccess: her maske VM_READ (0x10) icerir' ($noRead.Count -eq 0) ($noRead -join ';')
     Check 'sysmon ProcessAccess: kural disi kosul yok' (@($xml.SelectNodes("//RuleGroup/ProcessAccess/*[local-name()!='Rule']")).Count -eq 0) ''
     Check 'sysmon HashAlgorithms SHA256'($xml.DocumentElement.SelectSingleNode('HashAlgorithms').InnerText -eq 'SHA256') ''
     Check 'sysmon genis Windows Defender kurali yok' (-not (HasCond 'RegistryEvent' 'TargetObject' '\Windows Defender\' 'include')) ''

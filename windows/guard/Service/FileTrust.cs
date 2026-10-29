@@ -11,6 +11,31 @@ namespace Cortmed.Guard
     // (CryptCATAdmin ile hash -> katalog -> WinVerifyTrust, katalog).
     public static class FileTrust
     {
+        // %SystemRoot% altinda standart kullanicilarin dosya olusturup calistirabildigi bilinen klasorler:
+        // buradaki imzali dosya konum bonusu almaz (Windows klasoru oneki tek basina guven saymaz).
+        static readonly string[] UserWritableWindowsDirs =
+        {
+            @"{System32}\spool\drivers\color", @"{System32}\Tasks", @"{System32}\com\dmp", @"{System32}\FxsTmp",
+            @"{System32}\Microsoft\Crypto\RSA\MachineKeys", @"{System32}\Tasks_Migrated",
+            @"{SysWOW64}\Tasks", @"{SysWOW64}\com\dmp", @"{SysWOW64}\FxsTmp",
+            @"{Windows}\Tasks", @"{Windows}\Temp", @"{Windows}\tracing", @"{Windows}\Registration\CRMLog"
+        };
+
+        static bool InUserWritableWindowsDir(string full)
+        {
+            var kf = KnownFolders.Current;
+            string dir = Path.GetDirectoryName(full) ?? "";
+            // klasorun kendisi ya da herhangi bir alt klasoru
+            while (!string.IsNullOrEmpty(dir))
+            {
+                if (PathRules.MatchesAny(UserWritableWindowsDirs, dir, kf)) return true;
+                string up = Path.GetDirectoryName(dir);
+                if (up == dir) break;
+                dir = up;
+            }
+            return false;
+        }
+
         static readonly Regex UserFolder = new Regex(
             @"\\Users\\(Public\\|[^\\]+\\(Downloads|Desktop|AppData)\\|[^\\]+\\OneDrive[^\\]*\\(Desktop|Downloads|Documents|Belgeler|Masaüstü)\\)|\\Windows\\Temp\\",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -31,7 +56,7 @@ namespace Cortmed.Guard
         internal static int LocationScore(string fullPath, bool signed, BehaviorRules r)
         {
             bool user = UserFolder.IsMatch(fullPath);
-            if (signed) return IsTrustedLocation(fullPath) && !user ? r.TrustedLocationBonus : 0;
+            if (signed) return IsTrustedLocation(fullPath) && !user && !InUserWritableWindowsDir(fullPath) ? r.TrustedLocationBonus : 0;
             return user ? 30 : 15;
         }
 

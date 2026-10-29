@@ -162,22 +162,17 @@ namespace Cortmed.Guard
             return r != null && IsLauncher(parentImage, r.Launchers);
         }
 
-        // Tam yolu System32 ya da SysWOW64 altinda (alt klasorler dahil, or. wbem) olan Windows hizmet sureci.
+        // Windows hizmet sureci: YALNIZCA tam yol {System32}\<ad>, {SysWOW64}\<ad> ya da {System32|SysWOW64}\wbem\WmiPrvSE.exe.
+        // Daha derin alt klasorler asla (spool\drivers\color, Tasks, com\dmp gibi kullanicilarin yazabildigi yerler var).
         public static bool IsWindowsHost(string path, KnownFolders kf)
         {
             if (string.IsNullOrEmpty(path)) return false;
             kf = kf ?? KnownFolders.Current;
-            string p = Normalize(path);
-            string name = FileName(p);
-            bool host = false;
-            foreach (string h in WindowsHosts) if (name.Equals(h, OIC)) { host = true; break; }
-            if (!host) return false;
-            foreach (string dir in new[] { kf.System32, kf.SysWOW64 })
+            foreach (string h in WindowsHosts)
             {
-                if (string.IsNullOrEmpty(dir)) continue;
-                if (p.StartsWith(dir.TrimEnd('\\') + "\\", OIC)) return true;
+                if (Matches(@"{System32}\" + h, path, kf) || Matches(@"{SysWOW64}\" + h, path, kf)) return true;
             }
-            return false;
+            return Matches(@"{System32}\wbem\WmiPrvSE.exe", path, kf) || Matches(@"{SysWOW64}\wbem\WmiPrvSE.exe", path, kf);
         }
     }
 }

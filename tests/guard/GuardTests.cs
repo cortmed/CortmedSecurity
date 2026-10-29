@@ -738,17 +738,50 @@ public static class GuardTests
         string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         foreach (string p in new[] { Path.Combine(sys, "smss.exe"), Path.Combine(sys, "csrss.exe"), Path.Combine(sys, "wininit.exe"),
             Path.Combine(sys, "winlogon.exe"), Path.Combine(sys, "services.exe"), Path.Combine(sys, "lsass.exe"), Path.Combine(win, "explorer.exe"),
-            Path.Combine(sys, "dwm.exe"), Path.Combine(pf, @"Cortmed\CortmedGuard.exe"),
-            Path.Combine(Path.GetPathRoot(sys), @"Users\anne\AppData\Local\CortmedSecurity\CortmedSecurity.exe") })
+            Path.Combine(sys, "dwm.exe"), Path.Combine(pf, @"Cortmed\CortmedGuard.exe") })
         {
             Assert(!ProcessControl.CanFreezeImage(p, 1, empty), "taban: " + p);
             Assert(!ProcessControl.CanFreezeImage(p.ToUpperInvariant(), 1, Rules()), "kurallar: " + p);
         }
+        // N3: kullanicinin yazabildigi tepsi baslaticisi korunmaz ve LSASS'a guvenilir sayilmaz (tepsi powershell.exe olarak calisir)
+        string tray = Path.Combine(Path.GetPathRoot(sys), @"Users\anne\AppData\Local\CortmedSecurity\CortmedSecurity.exe");
+        Assert(ProcessControl.CanFreezeImage(tray, 1, Rules()), "kullanici klasorundeki CortmedSecurity.exe dondurulabilir");
+        Assert(new Classifier(Rules()).Classify(LsassOpen(tray, "0x1010")).Count == 1, "CortmedSecurity.exe LSASS'a guvenilir degil");
         // imzali kurallar ekleyebilir
         var more = BehaviorRules.Parse(RulesJson(d => d["neverFreeze"] = new object[] { @"{ProgramFiles}\Foo\foo.exe" }));
         Assert(!ProcessControl.CanFreezeImage(Path.Combine(pf, @"Foo\foo.exe"), 1, more), "kuralla eklenen");
         Assert(ProcessControl.CanFreezeImage(Path.Combine(pf, @"Foo\foo.exe"), 1, Rules()), "eklenmemisse dondurulabilir");
         Assert(!ProcessControl.CanFreezeImage("", 1, Rules()) && !ProcessControl.CanFreezeImage(null, 1, Rules()), "yolu bilinmeyen dondurulmaz");
+    }
+
+    [Test] static void WindowsHostsMatchExactPathsOnly()
+    {
+        string sys = Environment.SystemDirectory;
+        string wow = Path.Combine(Path.GetDirectoryName(sys), "SysWOW64");
+        var kf = KnownFolders.Current;
+        string spool = Path.Combine(sys, @"spool\drivers\color\svchost.exe");
+        Assert(!PathRules.IsWindowsHost(spool, kf), "spool\\drivers\\color\\svchost.exe host degil");
+        Assert(ProcessControl.CanFreezeImage(spool, 1, Rules()), "spool svchost dondurulabilir");
+        Assert(!PathRules.IsRootStarter(spool, Rules(), kf), "spool svchost kok baslatmaz");
+        foreach (string p in new[] { @"Tasks\dllhost.exe", @"com\dmp\taskhostw.exe", @"wbem\svchost.exe", @"wbem\sub\WmiPrvSE.exe" })
+        {
+            Assert(!PathRules.IsWindowsHost(Path.Combine(sys, p), kf), "System32 alt klasor: " + p);
+            Assert(!PathRules.IsWindowsHost(Path.Combine(wow, p), kf), "SysWOW64 alt klasor: " + p);
+        }
+        Assert(PathRules.IsWindowsHost(Path.Combine(sys, "svchost.exe"), kf) && PathRules.IsWindowsHost(Path.Combine(wow, "dllhost.exe"), kf), "dogrudan");
+        Assert(PathRules.IsWindowsHost(Path.Combine(sys, @"wbem\WmiPrvSE.exe"), kf) && PathRules.IsWindowsHost(Path.Combine(wow, @"wbem\WmiPrvSE.exe"), kf), "wbem WmiPrvSE");
+        Assert(!ProcessControl.CanFreezeImage(Path.Combine(sys, @"wbem\WmiPrvSE.exe"), 1, Rules()), "wbem WmiPrvSE dondurulmaz");
+    }
+
+    [Test] static void SignedInUserWritableWindowsFolderGetsNoBonus()
+    {
+        string sys = Environment.SystemDirectory;
+        string win = Path.GetDirectoryName(sys);
+        foreach (string p in new[] { Path.Combine(sys, @"spool\drivers\color\x.exe"), Path.Combine(sys, @"Tasks\x.exe"),
+            Path.Combine(sys, @"com\dmp\x.exe"), Path.Combine(win, @"SysWOW64\Tasks\x.exe"), Path.Combine(win, @"Tasks\x.exe"),
+            Path.Combine(win, @"tracing\x.exe"), Path.Combine(win, @"Registration\CRMLog\x.exe") })
+            Assert(FileTrust.LocationScore(p, true, Rules()) == 0, "bonus olmamali: " + p);
+        Assert(FileTrust.LocationScore(Path.Combine(sys, @"WindowsPowerShell\v1.0\powershell.exe"), true, Rules()) == -30, "normal alt klasor");
     }
 
     [Test] static void SessionZeroAndServiceHostsAreNeverFrozen()
@@ -1044,6 +1077,12 @@ public static class GuardTests
         public List<List<int>> Killed = new List<List<int>>();
         public Dictionary<int, long> Starts = new Dictionary<int, long>();
         public HashSet<int> Unfreezable = new HashSet<int>();
+        public Dictionary<int, int> Sessions = new Dictionary<int, int>();
+        public int SessionOf(int pid)
+        {
+            int v;
+            return Sessions.TryGetValue(pid, out v) ? v : 1;
+        }
         public List<int> FreezeTree(List<int> pids)
         {
             Frozen.Add(new List<int>(pids));
@@ -1165,8 +1204,45 @@ public static class GuardTests
             + string.Join(",", decisions.Select(d => d.RootPid + "/" + d.Score)));
         Assert(!c.Frozen.Any(l => l.Contains(1000) || l.Contains(1100) || l.Contains(1200)), "svchost agaci dondurulmamali");
         Assert(s.Sent.Count == 0 && !ReadData(dir, "pending.json").Contains("svchost"), "soru yok");
-        string findings = ReadData(dir, "findings.json");
-        Assert(findings.Contains("svchost.exe") && findings.Contains("dondurulamad"), "dondurulamadi bulgusu: " + findings);
+        Assert(!File.Exists(Path.Combine(dir, "findings.json")), "korumali kok icin bulgu yazilmaz: " + ReadData(dir, "findings.json"));
+        Assert(ReadData(dir, "guard.log").Contains("Korumalı süreç, yalnızca kaydedildi") && ReadData(dir, "guard.log").Contains("svchost.exe"), "yalnizca guard.log");
+    }
+
+    [Test] static void HiddenPowerShellStartedBySvchostLandsOnItsOwnRoot()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(BehaviorRules.Parse(RulesJson(d => { d["freezeAt"] = 50; d["warnAt"] = 20; })), dir, c, s);
+        var decisions = new List<Decision>();
+        g.DecisionMade = (d, img) => decisions.Add(d);
+        string sys = Environment.SystemDirectory;
+        var t0 = new DateTime(2026, 10, 29, 10, 0, 0, DateTimeKind.Utc);
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 700, ParentPid = 600, Image = Path.Combine(sys, "services.exe"), Time = t0 });
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 1000, ParentPid = 700, Image = Path.Combine(sys, "svchost.exe"), Time = t0 });
+        // Downloads'taki (dosyasi yok, taban 15) powershell.exe adli program: 15 + 30 = 45 >= 20 (Warn)
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 1200, ParentPid = 1000, Image = @"C:\Users\k\Downloads\powershell.exe",
+            ParentImage = Path.Combine(sys, "svchost.exe"), CommandLine = "powershell -WindowStyle Hidden -enc AAAA", Time = t0.AddSeconds(1) });
+        Assert(decisions.Count == 1 && decisions[0].RootPid == 1200, "isabet PowerShell'in kendi kokunde: "
+            + string.Join(",", decisions.Select(d => d.RootPid + "/" + d.Score)));
+        Assert(ReadData(dir, "findings.json").Contains("powershell.exe") && !ReadData(dir, "findings.json").Contains("svchost"), "bulgu svchost'u adlandirmaz");
+
+        // Ebeveyn kok baslatan degilse isabet ebeveynde kalir
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 2000, ParentPid = 900, Image = @"C:\Users\k\Downloads\evil.exe", Time = t0.AddSeconds(2) });
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 2100, ParentPid = 2000, Image = PS, ParentImage = @"C:\Users\k\Downloads\evil.exe",
+            CommandLine = "powershell -enc AAAA", Time = t0.AddSeconds(3) });
+        Assert(decisions.Count == 2 && decisions[1].RootPid == 2000, "evil.exe'nin cocugu: isabet evil.exe kokunde");
+    }
+
+    [Test] static void HitsOnSessionZeroRootAreOnlyLogged()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        c.Sessions[5000] = 0;
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        Assert(c.Frozen.Count == 0 && s.Sent.Count == 0, "oturum 0 koku dondurulmaz, sorulmaz");
+        Assert(!File.Exists(Path.Combine(dir, "findings.json")), "bulgu yazilmaz");
+        Assert(ReadData(dir, "guard.log").Contains("oturum 0"), "guard.log'a yazilir");
     }
 
     [Test] static void KillAnswerKillsTreeAndRecordsFinding()

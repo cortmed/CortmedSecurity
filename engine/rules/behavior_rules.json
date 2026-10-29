@@ -26,15 +26,13 @@
   "neverFreeze": [
     "{System32}\\smss.exe", "{System32}\\csrss.exe", "{System32}\\wininit.exe", "{System32}\\winlogon.exe",
     "{System32}\\services.exe", "{System32}\\lsass.exe", "{Windows}\\explorer.exe", "{System32}\\dwm.exe",
-    "{ProgramFiles}\\Cortmed\\CortmedGuard.exe",
-    "{Users}\\*\\AppData\\Local\\CortmedSecurity\\CortmedSecurity.exe"
+    "{ProgramFiles}\\Cortmed\\CortmedGuard.exe"
   ],
   "trustedImages": [
     "{ProgramData}\\Microsoft\\Windows Defender\\Platform\\*\\MsMpEng.exe",
     "{ProgramFiles}\\Windows Defender\\MsMpEng.exe",
     "{System32}\\svchost.exe",
     "{ProgramFiles}\\Cortmed\\CortmedGuard.exe",
-    "{Users}\\*\\AppData\\Local\\CortmedSecurity\\CortmedSecurity.exe",
     "{Windows}\\WinSxS\\*\\TiWorker.exe",
     "{Windows}\\servicing\\TrustedInstaller.exe"
   ],
