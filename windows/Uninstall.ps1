@@ -16,8 +16,12 @@ foreach ($p in $procs | Where-Object { $_ }) {
 $pfBase = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
 $guardUninstall = Join-Path $pfBase 'Cortmed\Uninstall-Guard.ps1'
 if (Test-Path $guardUninstall) {
+    # Her zaman 64 bit Windows PowerShell (32 bit kabukta Program Files x86'ya donerdi)
+    $ps64 = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        Join-Path ([Environment]::GetFolderPath('Windows')) 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    } else { Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe' }
     try {
-        $gp = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ErrorAction Stop `
+        $gp = Start-Process $ps64 -Verb RunAs -Wait -PassThru -ErrorAction Stop `
             -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $guardUninstall)
         if ($gp.ExitCode -ne 0) { Write-Host "Davranış bekçisi tam kaldırılamadı (kod $($gp.ExitCode))." -ForegroundColor Yellow }
     } catch {
