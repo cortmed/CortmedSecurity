@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="cortmed_bg">#0B1526</color>
+    <color name="cortmed_icon_bg">#07142A</color>
+    <color name="cortmed_accent">#29B6F6</color>
+    <color name="cortmed_red">#B91C1C</color>
+
+    <style name="Theme.Cortmed" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/cortmed_bg</item>
+        <item name="android:colorAccent">@color/cortmed_accent</item>
+        <item name="android:statusBarColor">@color/cortmed_bg</item>
+        <item name="android:navigationBarColor">@color/cortmed_bg</item>
+        <item name="android:windowBackground">@color/cortmed_bg</item>
+    </style>
+
+    <style name="Theme.Cortmed.Alert" parent="Theme.Cortmed">
+        <item name="android:statusBarColor">@color/cortmed_red</item>
+        <item name="android:navigationBarColor">@color/cortmed_red</item>
+        <item name="android:windowBackground">@color/cortmed_red</item>
+    </style>
+</resources>

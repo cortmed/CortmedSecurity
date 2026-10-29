@@ -1,0 +1,8 @@
+# Elle eklenen parmak izleri: her satira "<sha256 veya md5> [aile adi]"
+# Ornek: bir arkadasindan gelen zararli dosyanin SHA-256'sini buraya ekleyebilirsin.
+
+# Cortmed test dosyasi (test/cortmed-test-dosyasi.txt) - zararsizdir, alarm testleri icin
+0095ba2a1b3cecdb0e02aa44c1d5784ed7960d3adf260b6ffcca9db5d0997b6f Cortmed-Test-Dosyasi
+
+# Cortmed test APK (test/cortmed-test-virus.apk) - zararsizdir, Android alarm testi icin
+2a6c6998530fa4024a91b2352c61adcecf715b7ab7ad04e50f4908c06b5eb56e Cortmed-Test-APK

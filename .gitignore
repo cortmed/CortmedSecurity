@@ -1,0 +1,21 @@
+# Imza anahtari ve sifresi ASLA GitHub'a yuklenmemeli
+android/keystore/
+android/keystore.properties
+android/local.properties
+
+# Derleme ciktilari
+android/.gradle/
+android/.kotlin/
+android/**/build/
+dist/
+engine/.cache/
+engine/dist/
+engine/build.log
+
+# Kaynak gorsel bir duvar kagidi sitesinden (filigranli); depoya konmaz
+branding/kaynak-gorsel.jpg
+
+# Yerel calisma dosyalari
+*.log
+_kontrol.txt
+

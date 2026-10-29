@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "trusted_installers": [
+    "com.android.vending",
+    "com.google.android.feedback",
+    "com.sec.android.app.samsungapps",
+    "com.huawei.appmarket",
+    "com.xiaomi.market",
+    "com.xiaomi.mipicks",
+    "com.heytap.market",
+    "com.oppo.market",
+    "com.bbk.appstore",
+    "com.amazon.venezia",
+    "com.transsion.phonemaster"
+  ],
+  "remote_access_prefixes": [
+    "com.anydesk.",
+    "com.teamviewer.",
+    "com.carriez.flutter_hbb",
+    "com.rustdesk.",
+    "com.sand.airdroid",
+    "com.sand.airmirror",
+    "com.splashtop.",
+    "com.screenconnect.",
+    "com.zoho.assist",
+    "com.rsupport.",
+    "com.oray.sunlogin",
+    "youqu.android.todesk",
+    "com.remotepc.",
+    "com.logmein.",
+    "com.bomgar.",
+    "com.beyondtrust.",
+    "com.supremocontrol.",
+    "com.ultraviewer."
+  ],
+  "impersonation_keywords": [
+    "ziraat", "iş bankası", "isbank", "işcep", "iscep", "garanti", "bbva", "akbank",
+    "yapı kredi", "yapikredi", "qnb", "finansbank", "vakıf", "vakifbank", "halkbank",
+    "denizbank", "mobildeniz", "teb", "ing", "kuveyt", "albaraka", "enpara", "papara",
+    "şekerbank", "odeabank", "fibabanka", "türkiye finans", "ininal", "tosla",
+    "e-devlet", "edevlet", "türkiye.gov", "turkiye.gov", "sgk", "gib",
+    "hgs", "ptt", "yurtiçi kargo", "aras kargo", "mng kargo", "sürat kargo", "hepsijet",
+    "kargo takip", "mobil şube", "internet şube", "turkcell", "vodafone", "türk telekom", "turk telekom"
+  ],
+  "sms_permissions": [
+    "android.permission.READ_SMS",
+    "android.permission.RECEIVE_SMS",
+    "android.permission.SEND_SMS"
+  ],
+  "spy_permissions": [
+    "android.permission.READ_CALL_LOG",
+    "android.permission.READ_CONTACTS",
+    "android.permission.RECORD_AUDIO",
+    "android.permission.CAMERA",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.ACCESS_BACKGROUND_LOCATION"
+  ],
+  "virustotal_malicious_threshold": 3
+}
