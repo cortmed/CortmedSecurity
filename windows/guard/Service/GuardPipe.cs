@@ -57,49 +57,91 @@ namespace Cortmed.Guard
             _thread.Start();
         }
 
-        public void SendPrompt(Prompt p)
+        const int MaxOut = 4096; // istemci de bu sinirdan uzun satiri atar
+
+        static string Trunc(string s, int max)
         {
-            if (p == null) return;
-            var d = new Dictionary<string, object>();
-            d["type"] = "ask";
-            d["id"] = p.Id;
-            d["program"] = p.Program;
-            d["path"] = p.Path;
-            d["publisher"] = p.Publisher;
-            d["score"] = p.Score;
-            d["reasons"] = p.Reasons ?? new List<string>();
-            Send(d);
+            if (s == null) return "";
+            if (s.Length <= max) return s;
+            int n = max - 1;
+            if (n > 0 && char.IsHighSurrogate(s[n - 1])) n--;
+            return s.Substring(0, n) + "…";
+        }
+
+        // true: satirin tamami bagli istemciye yazildi.
+        public bool SendPrompt(Prompt p)
+        {
+            if (p == null) return false;
+            try
+            {
+                string id = p.Id ?? "";
+                string program = Trunc(p.Program, 512);
+                string path = Trunc(p.Path, 512);
+                string publisher = Trunc(p.Publisher, 256);
+                var reasons = new List<string>();
+                if (p.Reasons != null)
+                    foreach (string r in p.Reasons)
+                    {
+                        if (reasons.Count >= 10) break;
+                        reasons.Add(Trunc(r, 256));
+                    }
+                var ser = new JavaScriptSerializer();
+                var enc = new UTF8Encoding(false);
+                while (true)
+                {
+                    var d = new Dictionary<string, object>();
+                    d["type"] = "ask";
+                    d["id"] = id;
+                    d["program"] = program;
+                    d["path"] = path;
+                    d["publisher"] = publisher;
+                    d["score"] = p.Score;
+                    d["reasons"] = reasons;
+                    byte[] data = enc.GetBytes(ser.Serialize(d) + "\n");
+                    if (data.Length <= MaxOut) return Write(data);
+                    // kucult: once yol, sonra nedenler, sonra program ve yayinci
+                    if (path.Length > 16) path = Trunc(path, path.Length / 2);
+                    else if (path.Length > 0) path = "";
+                    else if (reasons.Count > 0) reasons.RemoveAt(reasons.Count - 1);
+                    else if (program.Length > 16) program = Trunc(program, program.Length / 2);
+                    else if (publisher.Length > 16) publisher = Trunc(publisher, publisher.Length / 2);
+                    else if (id.Length > 64) id = id.Substring(0, 64);
+                    else return false; // daha kucultulemez
+                }
+            }
+            catch { return false; }
         }
 
         public void SendStatus(bool sysmonOk, bool sysmonPreexisting)
         {
-            var d = new Dictionary<string, object>();
-            d["type"] = "status";
-            d["sysmon"] = sysmonOk;
-            d["preexisting"] = sysmonPreexisting;
-            Send(d);
-        }
-
-        void Send(Dictionary<string, object> msg)
-        {
             try
             {
-                byte[] data = new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(msg) + "\n");
-                lock (_lock)
-                {
-                    if (_client == null) return; // istemci yok: dusur (tekrar gonderme baska gorev)
-                    try
-                    {
-                        Task t = _client.WriteAsync(data, 0, data.Length);
-                        if (!t.Wait(2000)) throw new IOException("yazma zaman asimi");
-                    }
-                    catch
-                    {
-                        DropClientLocked();
-                    }
-                }
+                var d = new Dictionary<string, object>();
+                d["type"] = "status";
+                d["sysmon"] = sysmonOk;
+                d["preexisting"] = sysmonPreexisting;
+                Write(new UTF8Encoding(false).GetBytes(new JavaScriptSerializer().Serialize(d) + "\n"));
             }
             catch { }
+        }
+
+        bool Write(byte[] data)
+        {
+            lock (_lock)
+            {
+                if (_client == null) return false; // istemci yok: dusur (bekleyen istem Task 8'in isi)
+                try
+                {
+                    Task t = _client.WriteAsync(data, 0, data.Length);
+                    if (!t.Wait(2000)) throw new IOException("yazma zaman asimi");
+                    return true;
+                }
+                catch
+                {
+                    DropClientLocked();
+                    return false;
+                }
+            }
         }
 
         void DropClientLocked()

@@ -339,6 +339,20 @@ namespace Cortmed
             return sb.ToString();
         }
 
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool WaitNamedPipe(string name, uint timeout);
+
+        // Boru var mi? WaitNamedPipe baglanti tuketmez; yoksa ERROR_FILE_NOT_FOUND (2) doner.
+        static bool PipeExists(string pipeName)
+        {
+            try
+            {
+                if (WaitNamedPipe(@"\.\pipe\" + pipeName, 1)) return true;
+                return Marshal.GetLastWin32Error() != 2;
+            }
+            catch { return true; }
+        }
+
         void Run()
         {
             while (!_disposed)
@@ -346,15 +360,18 @@ namespace Cortmed
                 NamedPipeClientStream p = null;
                 try
                 {
-                    p = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-                    p.Connect(2000);
-                    lock (_lock)
+                    if (PipeExists(_pipeName))
                     {
-                        if (_disposed) return;
-                        _pipe = p;
-                        _connected = true;
+                        p = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                        p.Connect(500);
+                        lock (_lock)
+                        {
+                            if (_disposed) return;
+                            _pipe = p;
+                            _connected = true;
+                        }
+                        ReadLoop(p);
                     }
-                    ReadLoop(p);
                 }
                 catch { }
                 finally
@@ -362,6 +379,8 @@ namespace Cortmed
                     lock (_lock)
                     {
                         _connected = false;
+                        _sysmonOk = false;
+                        _sysmonPre = false;
                         if (_pipe == p) _pipe = null;
                     }
                     if (p != null) { try { p.Dispose(); } catch { } }

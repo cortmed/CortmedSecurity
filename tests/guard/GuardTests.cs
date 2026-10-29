@@ -633,6 +633,65 @@ public static class GuardTests
         }
     }
 
+    [Test]
+    static void OversizedPromptIsTruncatedAndSendPromptReportsDelivery()
+    {
+        string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        using (var server = new GuardPipe(name, (id, d) => true))
+        {
+            server.Start();
+            Assert(!server.SendPrompt(new Prompt { Id = "none" }), "istemci yokken SendPrompt false olmali");
+            using (var client = new GuardClient(name))
+            {
+                Assert(WaitFor(() => client.Connected && server.HasClient), "baglanmali");
+                var reasons = new List<string>();
+                for (int i = 0; i < 20; i++) reasons.Add("<>&' \u015f\u011f\u00fc\u0130\u0131\u00f6\u00e7 " + new string('x', 400));
+                var p = new Prompt
+                {
+                    Id = "big1", Program = new string('p', 3000), Path = "C:\\" + new string('\u015f', 10000),
+                    Publisher = new string('<', 2000), Score = 90, Reasons = reasons
+                };
+                Assert(server.SendPrompt(p), "SendPrompt baglayken true donmeli");
+                string json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "buyuk istem istemciye ulasmali");
+                Assert(json.Contains("\"big1\""), "id korunmali");
+                Assert(Encoding.UTF8.GetByteCount(json) < 4096, "satir 4096 baytin altinda olmali");
+            }
+            Assert(WaitFor(() => !server.HasClient), "istemci kapandi");
+            Assert(!server.SendPrompt(new Prompt { Id = "after" }), "kopan istemciye false");
+        }
+    }
+
+    [Test]
+    static void ClientToMissingPipeIdlesAndStatusResetsOnDisconnect()
+    {
+        string missing = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        var proc = System.Diagnostics.Process.GetCurrentProcess();
+        TimeSpan before = proc.TotalProcessorTime;
+        using (var c = new GuardClient(missing))
+        {
+            System.Threading.Thread.Sleep(3000);
+            Assert(!c.Connected, "olmayan boruya baglanmamali");
+        }
+        proc.Refresh();
+        double cpu = (proc.TotalProcessorTime - before).TotalMilliseconds;
+        Assert(cpu < 300, "bosta CPU kullanimi: " + cpu + " ms");
+
+        string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        using (var client = new GuardClient(name))
+        {
+            using (var server = new GuardPipe(name, (id, d) => true))
+            {
+                server.Start();
+                Assert(WaitFor(() => client.Connected && server.HasClient, 12000), "baglanmali");
+                server.SendStatus(true, true);
+                Assert(WaitFor(() => client.SysmonOk && client.SysmonPreexisting), "status gelmeli");
+            }
+            Assert(WaitFor(() => !client.Connected), "kopma algilanmali");
+            Assert(!client.SysmonOk && !client.SysmonPreexisting, "kopunca status sifirlanmali");
+        }
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
