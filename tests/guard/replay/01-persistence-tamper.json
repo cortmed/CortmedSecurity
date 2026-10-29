@@ -1,0 +1,5 @@
+[
+  {"EventId":1,"Time":"2026-10-29T10:00:00Z","Pid":5000,"ParentPid":900,"Image":"C:\\Users\\k\\AppData\\Local\\Temp\\evil.exe","ParentImage":"C:\\Windows\\explorer.exe","CommandLine":"evil.exe","Hashes":"MD5=00,SHA256=9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08,IMPHASH=00"},
+  {"EventId":1,"Time":"2026-10-29T10:00:01Z","Pid":5001,"ParentPid":5000,"Image":"C:\\Users\\k\\AppData\\Local\\Temp\\helper.exe","ParentImage":"C:\\Users\\k\\AppData\\Local\\Temp\\evil.exe","CommandLine":"helper.exe"},
+  {"EventId":13,"Time":"2026-10-29T10:00:02Z","Pid":5000,"Image":"C:\\Users\\k\\AppData\\Local\\Temp\\evil.exe","TargetObject":"HKU\\S-1-5-21-1\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater"}
+]

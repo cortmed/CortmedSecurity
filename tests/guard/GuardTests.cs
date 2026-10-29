@@ -693,6 +693,412 @@ public static class GuardTests
         }
     }
 
+    // ---- hizmet motoru ----
+
+    const string EvilHash = "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08";
+
+    class FakeControl : IProcessControl
+    {
+        public List<List<int>> Frozen = new List<List<int>>();
+        public List<List<int>> Resumed = new List<List<int>>();
+        public List<List<int>> Killed = new List<List<int>>();
+        public Dictionary<int, long> Starts = new Dictionary<int, long>();
+        public HashSet<int> Unfreezable = new HashSet<int>();
+        public List<int> FreezeTree(List<int> pids)
+        {
+            Frozen.Add(new List<int>(pids));
+            return pids.Where(p => !Unfreezable.Contains(p)).ToList();
+        }
+        public void ResumeTree(List<int> pids) { Resumed.Add(new List<int>(pids)); }
+        public void KillTree(List<int> pids) { Killed.Add(new List<int>(pids)); }
+        public long StartTimeOf(int pid)
+        {
+            long v;
+            return Starts.TryGetValue(pid, out v) ? v : 1000L + pid;
+        }
+    }
+
+    class FakeSink : IPromptSink
+    {
+        public bool Client = true;
+        public List<Prompt> Sent = new List<Prompt>();
+        public bool HasClient { get { return Client; } }
+        public bool Send(Prompt p)
+        {
+            if (!Client) return false;
+            Sent.Add(p);
+            return true;
+        }
+    }
+
+    static string NewDataDir()
+    {
+        string d = Path.Combine(Path.GetTempPath(), "CortmedGuardTest-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(d);
+        return d;
+    }
+
+    static void RunReplay(GuardEngine engine)
+    {
+        foreach (var e in GuardReplay.LoadEvents(RepoPath("tests/guard/replay"))) engine.OnEvent(e);
+    }
+
+    static string ReadData(string dir, string name)
+    {
+        string p = Path.Combine(dir, name);
+        return File.Exists(p) ? File.ReadAllText(p, Encoding.UTF8) : "";
+    }
+
+    static GuardEvent Start(int pid, int parent, string image, int sec)
+    {
+        return new GuardEvent
+        {
+            EventId = 1, Pid = pid, ParentPid = parent, Image = image,
+            Time = new DateTime(2026, 10, 29, 10, 0, sec, DateTimeKind.Utc)
+        };
+    }
+
+    [Test] static void ReplayLoadsEventsInFilenameOrder()
+    {
+        var evs = GuardReplay.LoadEvents(RepoPath("tests/guard/replay"));
+        Assert(evs.Count == 4, "olay sayisi " + evs.Count);
+        Assert(evs[0].EventId == 1 && evs[0].Pid == 5000 && evs[3].EventId == 11, "sira");
+        Assert(evs[0].Time == new DateTime(2026, 10, 29, 10, 0, 0, DateTimeKind.Utc) && evs[0].Time.Kind == DateTimeKind.Utc, "zaman UTC");
+        Assert(SysmonReader.Sha256Of(evs[0].Hashes) == EvilHash, "hash");
+    }
+
+    [Test] static void ReplayPersistencePlusTamperFreezesAndAsks()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        Assert(c.Frozen.Count == 1, "FreezeTree bir kez: " + c.Frozen.Count);
+        Assert(c.Frozen[0].Count == 2 && c.Frozen[0][0] == 5000 && c.Frozen[0][1] == 5001, "kok once, cocuk sonra");
+        Assert(s.Sent.Count == 1, "bir soru gonderilmeli");
+        var p = s.Sent[0];
+        Assert(p.Reasons.Count == 2 && p.Score == 100 && p.Program == "evil.exe", "soru icerigi");
+        Assert(p.Path.EndsWith("\\Temp\\evil.exe") && !string.IsNullOrEmpty(p.Id), "yol/id");
+        Assert(ReadData(dir, "pending.json").Contains(p.Id), "pending.json'a yazilmali");
+        string findings = ReadData(dir, "findings.json");
+        Assert(findings.Contains("YELLOW") && findings.Contains("behavior:" + EvilHash), "50 puanda Warn bulgusu");
+        Assert(ReadData(dir, "guard.log").Length > 0, "guard.log yazilmali");
+    }
+
+    [Test] static void KillAnswerKillsTreeAndRecordsFinding()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        string id = s.Sent[0].Id;
+        Assert(!g.OnAnswer("bilinmeyen", "kill"), "bilinmeyen id reddedilmeli");
+        Assert(!g.OnAnswer(id, "sil"), "gecersiz karar reddedilmeli");
+        Assert(g.OnAnswer(id, "kill"), "kill kabul edilmeli");
+        Assert(c.Killed.Count == 1 && c.Killed[0].SequenceEqual(new[] { 5000, 5001 }), "agac kok once kapatilmali");
+        Assert(c.Resumed.Count == 0, "devam ettirilmemeli");
+        Assert(!g.OnAnswer(id, "kill"), "ikinci cevap reddedilmeli");
+        Assert(!ReadData(dir, "pending.json").Contains(id), "pending'den silinmeli");
+        var list = (object[])new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(ReadData(dir, "findings.json"));
+        Assert(list.Length == 1, "ayni anahtar tek bulgu: " + list.Length);
+        var f = (Dictionary<string, object>)list[0];
+        Assert((string)f["level"] == "RED" && (string)f["key"] == "behavior:" + EvilHash && (string)f["tab"] == "threat", "RED bulgu");
+        Assert(((string)f["title"]).Contains("evil.exe") && ((string)f["report"]).Contains("100"), "baslik/rapor");
+        Assert(!File.Exists(Path.Combine(dir, "allowed.txt")) || !ReadData(dir, "allowed.txt").Contains(EvilHash), "kill izin listesine eklemez");
+    }
+
+    [Test] static void KillSkipsPidsWhoseStartTimeChanged()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        c.Starts[5001] = 42; // pid yeniden kullanildi
+        Assert(g.OnAnswer(s.Sent[0].Id, "kill"));
+        Assert(c.Killed.Count == 1 && c.Killed[0].SequenceEqual(new[] { 5000 }), "degisen pid kapatilmamali");
+    }
+
+    [Test] static void AllowAnswerResumesAndPersistsHash()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        Assert(g.OnAnswer(s.Sent[0].Id, "allow"), "allow kabul edilmeli");
+        Assert(c.Resumed.Count == 1 && c.Resumed[0].SequenceEqual(new[] { 5000, 5001 }), "agac devam etmeli");
+        Assert(c.Killed.Count == 0, "kapatilmamali");
+        Assert(ReadData(dir, "allowed.txt").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Contains(EvilHash), "hash allowed.txt'te");
+        // Forget sonrasi ayni kokten yeni davranis tekrar sorulmamali (izinli)
+        var e = new GuardEvent { EventId = 13, Pid = 5000, Image = @"C:\Users\k\AppData\Local\Temp\evil.exe",
+            TargetObject = @"HKU\S-1-5-21-1\Software\Microsoft\Windows\CurrentVersion\Run\X", Time = new DateTime(2026, 10, 29, 10, 1, 0, DateTimeKind.Utc) };
+        g.OnEvent(e);
+        e = new GuardEvent { EventId = 8, Pid = 5000, TargetPid = 77, Image = @"C:\Users\k\AppData\Local\Temp\evil.exe", Time = new DateTime(2026, 10, 29, 10, 1, 1, DateTimeKind.Utc) };
+        g.OnEvent(e);
+        Assert(c.Frozen.Count == 1 && s.Sent.Count == 1, "izinli program yeniden dondurulmamali");
+    }
+
+    [Test] static void AllowedHashIsNotAskedAgainAfterRestart()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        Assert(g.OnAnswer(s.Sent[0].Id, "allow"));
+        var c2 = new FakeControl(); var s2 = new FakeSink();
+        var g2 = new GuardEngine(Rules(), dir, c2, s2);
+        RunReplay(g2);
+        Assert(c2.Frozen.Count == 0 && s2.Sent.Count == 0, "izinli hash tekrar dondurulmamali");
+    }
+
+    [Test] static void PendingPromptsAreReplayedOnConnect()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        s.Client = false;
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        Assert(c.Frozen.Count == 1 && s.Sent.Count == 0, "tepsi yokken dondur, gonderme");
+        s.Client = true;
+        g.OnClientConnected();
+        Assert(s.Sent.Count == 1, "baglaninca gonderilmeli");
+        g.OnClientConnected();
+        Assert(s.Sent.Count == 2, "yeni baglantida bekleyen soru yeniden gonderilmeli");
+        Assert(g.OnAnswer(s.Sent[0].Id, "kill"));
+        g.OnClientConnected();
+        Assert(s.Sent.Count == 2, "cevaplanan soru gonderilmemeli");
+    }
+
+    [Test] static void PendingSurvivesRestartAndDropsGoneProcesses()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        s.Client = false;
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        // yeniden baslama: surecler hala ayni
+        var c2 = new FakeControl(); var s2 = new FakeSink();
+        var g2 = new GuardEngine(Rules(), dir, c2, s2);
+        g2.OnClientConnected();
+        Assert(s2.Sent.Count == 1 && s2.Sent[0].Reasons.Count == 2 && s2.Sent[0].Score == 100, "bekleyen soru geri yuklenmeli");
+        Assert(g2.OnAnswer(s2.Sent[0].Id, "kill"));
+        Assert(c2.Killed.Count == 1 && c2.Killed[0].SequenceEqual(new[] { 5000, 5001 }), "geri yuklenen agac kapatilmali");
+
+        // surecler yok olduysa kayit atilir
+        string dir2 = NewDataDir();
+        var c3 = new FakeControl(); var s3 = new FakeSink(); s3.Client = false;
+        RunReplay(new GuardEngine(Rules(), dir2, c3, s3));
+        var c4 = new FakeControl(); c4.Starts[5000] = 0; c4.Starts[5001] = 9;
+        var s4 = new FakeSink();
+        var g4 = new GuardEngine(Rules(), dir2, c4, s4);
+        g4.OnClientConnected();
+        Assert(s4.Sent.Count == 0, "biten sureclerin sorusu atilmali");
+        Assert(!ReadData(dir2, "pending.json").Contains("evil.exe"), "pending.json temizlenmeli");
+    }
+
+    [Test] static void ChildStartedDuringFreezeIsSuspended()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        g.OnEvent(Start(5002, 5001, @"C:\Windows\System32\cmd.exe", 10));
+        Assert(c.Frozen.Count == 2 && c.Frozen[1].SequenceEqual(new[] { 5002 }), "yeni cocuk hemen dondurulmali");
+        Assert(s.Sent.Count == 1, "yeni soru yok");
+        Assert(g.OnAnswer(s.Sent[0].Id, "kill"));
+        Assert(c.Killed[0].SequenceEqual(new[] { 5000, 5001, 5002 }), "yeni cocuk da kapatilmali");
+    }
+
+    [Test] static void ReusedRootPidIsNotTreatedAsFrozenTree()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        // 5000 olu, pid baska bir kok surece verildi; onun cocugu dondurulmamali
+        g.OnEvent(new GuardEvent { EventId = 5, Pid = 5000, Time = new DateTime(2026, 10, 29, 10, 0, 20, DateTimeKind.Utc) });
+        g.OnEvent(Start(5000, 900, @"C:\Windows\System32\notepad.exe", 21));
+        g.OnEvent(Start(5003, 5000, @"C:\Windows\System32\cmd.exe", 22));
+        Assert(c.Frozen.Count == 1, "yeniden kullanilan kokun cocugu dondurulmamali: " + c.Frozen.Count);
+        Assert(g.OnAnswer(s.Sent[0].Id, "allow"), "eski soru hala cevaplanabilir");
+    }
+
+    [Test] static void WholeTreeExitDropsPendingPrompt()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        g.OnEvent(new GuardEvent { EventId = 5, Pid = 5001, Time = new DateTime(2026, 10, 29, 10, 0, 30, DateTimeKind.Utc) });
+        g.OnEvent(new GuardEvent { EventId = 5, Pid = 5000, Time = new DateTime(2026, 10, 29, 10, 0, 31, DateTimeKind.Utc) });
+        Assert(!g.OnAnswer(s.Sent[0].Id, "kill"), "agac bitince soru dusmeli");
+        Assert(c.Killed.Count == 0);
+    }
+
+    [Test] static void NothingFrozenRecordsWarnInsteadOfPrompt()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        c.Unfreezable.Add(5000); c.Unfreezable.Add(5001);
+        var g = new GuardEngine(Rules(), dir, c, s);
+        RunReplay(g);
+        Assert(c.Frozen.Count == 1 && s.Sent.Count == 0, "soru olmamali");
+        Assert(!ReadData(dir, "pending.json").Contains("evil.exe"), "pending olmamali");
+        string findings = ReadData(dir, "findings.json");
+        Assert(findings.Contains("YELLOW") && findings.Contains("dondurulamad"), "Warn bulgusu: " + findings);
+    }
+
+    [Test] static void FindingsKeepAtMost200Newest()
+    {
+        string dir = NewDataDir();
+        string file = Path.Combine(dir, "findings.json");
+        for (int i = 0; i < 205; i++)
+        {
+            var f = new Dictionary<string, object>();
+            f["key"] = "k" + i; f["level"] = "YELLOW"; f["title"] = "t"; f["detail"] = "d"; f["path"] = ""; f["tab"] = "threat"; f["report"] = "r";
+            FindingStore.Upsert(file, f);
+        }
+        var list = FindingStore.Read(file);
+        Assert(list.Count == 200 && (string)list[0]["key"] == "k204", "en yeni 200: " + list.Count);
+        Assert(!list.Any(x => (string)x["key"] == "k0"), "en eski atilmali");
+    }
+
+    [Test] static void GuardLogRotatesAtOneMegabyte()
+    {
+        string dir = NewDataDir();
+        string path = Path.Combine(dir, "guard.log");
+        File.WriteAllText(path, new string('x', 1024 * 1024 + 10));
+        var log = new GuardLog(path);
+        log.Write("satir\r\nenjeksiyon");
+        Assert(File.Exists(path + ".1") && new FileInfo(path + ".1").Length > 1024 * 1024, "eski kayit .1 olmali");
+        string text = File.ReadAllText(path, Encoding.UTF8);
+        Assert(text.Contains("satir enjeksiyon") && text.Split('\n').Length == 2, "tek satir: " + text);
+    }
+
+    // ---- kural dogrulama ----
+
+    static byte[] ToDer(byte[] p1363)
+    {
+        Func<byte[], byte[]> integer = v =>
+        {
+            int i = 0;
+            while (i < v.Length - 1 && v[i] == 0) i++;
+            var b = v.Skip(i).ToList();
+            if ((b[0] & 0x80) != 0) b.Insert(0, 0);
+            var r = new List<byte> { 0x02, (byte)b.Count };
+            r.AddRange(b);
+            return r.ToArray();
+        };
+        var rr = integer(p1363.Take(32).ToArray());
+        var ss = integer(p1363.Skip(32).ToArray());
+        var der = new List<byte> { 0x30, (byte)(rr.Length + ss.Length) };
+        der.AddRange(rr); der.AddRange(ss);
+        return der.ToArray();
+    }
+
+    class TestKey
+    {
+        public System.Security.Cryptography.ECDsa Key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        public string X { get { return Hex(Key.ExportParameters(false).Q.X); } }
+        public string Y { get { return Hex(Key.ExportParameters(false).Q.Y); } }
+        public byte[] Sign(byte[] data) { return ToDer(Key.SignData(data, System.Security.Cryptography.HashAlgorithmName.SHA256)); }
+        static string Hex(byte[] b) { return BitConverter.ToString(b).Replace("-", "").ToLowerInvariant(); }
+    }
+
+    static byte[] Manifest(byte[] rules)
+    {
+        string sha;
+        using (var h = System.Security.Cryptography.SHA256.Create())
+            sha = BitConverter.ToString(h.ComputeHash(rules)).Replace("-", "").ToLowerInvariant();
+        return Encoding.UTF8.GetBytes("{\"files\":{\"behavior_rules.json\":{\"sha256\":\"" + sha + "\",\"size\":" + rules.Length + "}},\"version\":\"t1\"}");
+    }
+
+    static byte[] RulesBytes(int freezeAt)
+    {
+        string json = File.ReadAllText(RepoPath("engine/rules/behavior_rules.json"), Encoding.UTF8)
+            .Replace("\"freezeAt\": 80", "\"freezeAt\": " + freezeAt);
+        return Encoding.UTF8.GetBytes(json);
+    }
+
+    static void WriteSignedRules(string dir, TestKey k, byte[] rules)
+    {
+        byte[] m = Manifest(rules);
+        File.WriteAllBytes(Path.Combine(dir, "behavior-rules.json"), rules);
+        File.WriteAllBytes(Path.Combine(dir, "manifest.json"), m);
+        File.WriteAllBytes(Path.Combine(dir, "manifest.sig"), k.Sign(m));
+        File.WriteAllBytes(Path.Combine(dir, "behavior-rules.json.good"), RulesBytes(81));
+    }
+
+    [Test] static void SignedRulesAreLoaded()
+    {
+        string dir = NewDataDir(); var k = new TestKey();
+        WriteSignedRules(dir, k, RulesBytes(77));
+        var r = RulesStore.LoadTrusted(dir, k.X, k.Y, new GuardLog(Path.Combine(dir, "guard.log")));
+        Assert(r.FreezeAt == 77, "imzali kurallar yuklenmeli: " + r.FreezeAt);
+    }
+
+    [Test] static void TamperedRulesFallBackToLastGood()
+    {
+        string dir = NewDataDir(); var k = new TestKey();
+        WriteSignedRules(dir, k, RulesBytes(77));
+        File.WriteAllBytes(Path.Combine(dir, "behavior-rules.json"), RulesBytes(10)); // icerik degisti
+        var log = new GuardLog(Path.Combine(dir, "guard.log"));
+        var r = RulesStore.LoadTrusted(dir, k.X, k.Y, log);
+        Assert(r.FreezeAt == 81, ".good yuklenmeli: " + r.FreezeAt);
+        Assert(ReadData(dir, "guard.log").Contains("behavior-rules.json.good"), "kayit satiri");
+
+        // imza tutmazsa da .good
+        string dir2 = NewDataDir();
+        WriteSignedRules(dir2, k, RulesBytes(77));
+        var other = new TestKey();
+        File.WriteAllBytes(Path.Combine(dir2, "manifest.sig"), other.Sign(File.ReadAllBytes(Path.Combine(dir2, "manifest.json"))));
+        Assert(RulesStore.LoadTrusted(dir2, k.X, k.Y, log).FreezeAt == 81, "yanlis anahtar -> .good");
+
+        // manifest yoksa da .good
+        string dir3 = NewDataDir();
+        WriteSignedRules(dir3, k, RulesBytes(77));
+        File.Delete(Path.Combine(dir3, "manifest.json"));
+        Assert(RulesStore.LoadTrusted(dir3, k.X, k.Y, log).FreezeAt == 81, "manifest yok -> .good");
+    }
+
+    [Test] static void RuleUpdateVerifiesBeforeReplacing()
+    {
+        string dir = NewDataDir(); var k = new TestKey();
+        WriteSignedRules(dir, k, RulesBytes(77));
+        var log = new GuardLog(Path.Combine(dir, "guard.log"));
+        var remote = new Dictionary<string, byte[]>();
+        byte[] newRules = RulesBytes(66);
+        byte[] m = Manifest(newRules);
+        remote["https://x/db/manifest.json"] = m;
+        remote["https://x/db/manifest.sig"] = k.Sign(m);
+        remote["https://x/db/behavior_rules.json"] = RulesBytes(55); // sha tutmuyor
+        Func<string, byte[]> fetch = u => { byte[] b; if (!remote.TryGetValue(u, out b)) throw new IOException("404 " + u); return b; };
+
+        Assert(RulesStore.TryUpdate("https://x/db/", dir, k.X, k.Y, fetch, log) == null, "sha tutmayan guncelleme reddedilmeli");
+        Assert(RulesStore.LoadTrusted(dir, k.X, k.Y, log).FreezeAt == 77, "eski kurallar yerinde kalmali");
+
+        remote["https://x/db/behavior_rules.json"] = newRules;
+        remote["https://x/db/manifest.sig"] = new TestKey().Sign(m);
+        Assert(RulesStore.TryUpdate("https://x/db", dir, k.X, k.Y, fetch, log) == null, "imzasi tutmayan guncelleme reddedilmeli");
+
+        remote["https://x/db/manifest.sig"] = k.Sign(m);
+        var r = RulesStore.TryUpdate("https://x/db", dir, k.X, k.Y, fetch, log);
+        Assert(r != null && r.FreezeAt == 66, "gecerli guncelleme kabul edilmeli");
+        Assert(RulesStore.LoadTrusted(dir, k.X, k.Y, log).FreezeAt == 66, "diskteki kurallar degismeli");
+        Assert(RulesStore.LoadTrusted(dir, k.X, k.Y, log).FreezeAt == 66 && File.ReadAllBytes(Path.Combine(dir, "behavior-rules.json.good")).Length > 0, ".good korunmali");
+    }
+
+    [Test] static void UpdatedRulesAreHotSwapped()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        var strict = BehaviorRules.Parse(Encoding.UTF8.GetString(RulesBytes(40)));
+        g.UpdateRules(strict);
+        var evs = GuardReplay.LoadEvents(RepoPath("tests/guard/replay"));
+        foreach (var e in evs.Take(3)) g.OnEvent(e); // 15 + 35 = 50 >= 40
+        Assert(c.Frozen.Count == 1 && s.Sent.Count == 1, "yeni esik kullanilmali");
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)

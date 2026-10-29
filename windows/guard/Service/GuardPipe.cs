@@ -43,6 +43,10 @@ namespace Cortmed.Guard
             _onAnswer = onAnswer;
         }
 
+        // Istemci baglandiginda pipe thread'inde (okuma baslamadan once) cagrilir.
+        // Hizmet bekleyen sorulari ve durumu burada yeniden gonderir. Istisnalari yutulur.
+        public Action Connected;
+
         public bool HasClient
         {
             get { lock (_lock) return _client != null; }
@@ -179,6 +183,8 @@ namespace Cortmed.Guard
                         if (_disposed) return;
                         _client = s;
                     }
+                    Action onConnected = Connected;
+                    if (onConnected != null) { try { onConnected(); } catch { } }
                     ReadLoop(s);
                 }
                 catch

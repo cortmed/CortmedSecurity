@@ -15,7 +15,8 @@ $src += (Join-Path $root 'windows\CortmedEngine.cs')
 $src += (Join-Path $root 'tests\guard\GuardTests.cs')
 
 $refs = 'System.dll','System.Core.dll','System.Xml.dll','System.Xml.Linq.dll','System.ServiceProcess.dll','System.Web.Extensions.dll'
-$cscArgs = @('/nologo', '/target:exe', '/utf8output', '/codepage:65001', "/out:$exe") + ($refs | ForEach-Object { "/r:$_" }) + $src
+# GuardService.cs kendi Main'ini (GuardProgram) icerir; test calistiricisinin Main'i secilir.
+$cscArgs = @('/nologo', '/target:exe', '/main:GuardTests', '/utf8output', '/codepage:65001', "/out:$exe") + ($refs | ForEach-Object { "/r:$_" }) + $src
 & $csc @cscArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "Derleme hatası"; exit 1 }
 
