@@ -338,6 +338,76 @@ public static class GuardTests
         Assert(new Classifier(Rules()).Classify(e).Count == 0, "kullanici kurulumu Chrome");
     }
 
+    static GuardEvent RunWrite(string writer, string details)
+    {
+        var e = new GuardEvent();
+        e.EventId = 13; e.Pid = 10; e.Image = writer; e.Details = details;
+        e.TargetObject = @"HKU\S-1-5-21-1\Software\Microsoft\Windows\CurrentVersion\Run\App";
+        return e;
+    }
+
+    [Test] static void SignedAppRefreshingItsOwnRunValueIsNotPersistence()
+    {
+        string app = @"C:\Users\k\AppData\Local\Vendor\app.exe";
+        var signedAll = new Classifier(Rules(), null, p => true);
+        Assert(signedAll.Classify(RunWrite(app, "\"C:\\Users\\k\\AppData\\Local\\Vendor\\app.exe\" --minimized")).Count == 0, "kendi klasoru, tirnakli");
+        Assert(signedAll.Classify(RunWrite(app, @"C:\Users\k\AppData\Local\Vendor\bin\helper.exe")).Count == 0, "kendi alt klasoru");
+        Assert(signedAll.Classify(RunWrite(@"C:\Program Files\Vendor App\app.exe", @"C:\Program Files\Vendor App\app.exe /background")).Count == 0, "bosluklu, tirnaksiz");
+        var runOnce = RunWrite(app, app);
+        runOnce.TargetObject = @"HKU\S\Software\Microsoft\Windows\CurrentVersion\RunOnce\App";
+        Assert(signedAll.Classify(runOnce).Count == 0, "RunOnce");
+
+        Func<List<Hit>, bool> persist = h => h.Count == 1 && h[0].Behavior == Behavior.Persistence;
+        Assert(persist(signedAll.Classify(RunWrite(app, @"C:\Users\k\AppData\Local\Temp\x.exe"))), "baska klasore isaret eder");
+        Assert(persist(signedAll.Classify(RunWrite(app, @"C:\Users\k\AppData\Local\Vendor2\x.exe"))), "benzer adli klasor");
+        Assert(persist(signedAll.Classify(RunWrite(app, @"C:\Users\k\AppData\Local\Vendor\..\Temp\x.exe"))), "..\\ ile kacis");
+        Assert(persist(signedAll.Classify(RunWrite(app, @"%LOCALAPPDATA%\Vendor\app.exe"))), "genisletilmemis yol");
+        Assert(persist(signedAll.Classify(RunWrite(app, null))), "veri yok");
+        Assert(persist(signedAll.Classify(RunWrite(app, @"C:\Windows\System32\rundll32.exe C:\Users\k\AppData\Local\Vendor\x.dll,Run"))), "rundll32 ile");
+        Assert(persist(new Classifier(Rules(), null, p => false).Classify(RunWrite(app, app))), "imzasiz yazici");
+        Assert(persist(new Classifier(Rules()).Classify(RunWrite(app, app))), "imza denetimi verilmemis");
+    }
+
+    [Test] static void SignedSyncClientsDoNotCountDocumentWrites()
+    {
+        var e = new GuardEvent();
+        e.EventId = 11; e.Pid = 10;
+        e.TargetFilename = @"C:\Users\k\OneDrive\Desktop\photo1.jpg";
+        var signedAll = new Classifier(Rules(), null, p => true);
+        foreach (string sc in new[] { @"C:\Users\k\AppData\Local\Microsoft\OneDrive\OneDrive.exe", @"C:\Program Files\Dropbox\Client\Dropbox.exe",
+            @"C:\Program Files\Google\Drive File Stream\90.0\GoogleDriveFS.exe", @"C:\Program Files\WindowsApps\AppleInc.iCloud\iCloud\iCloudDrive.exe" })
+        {
+            e.Image = sc;
+            Assert(!signedAll.CountsAsDocumentWrite(e), "imzali esitleme: " + sc);
+            Assert(new Classifier(Rules(), null, p => false).CountsAsDocumentWrite(e), "imzasiz ayni ad sayilir: " + sc);
+        }
+        e.Image = @"C:\Users\k\Downloads\locker.exe";
+        Assert(signedAll.CountsAsDocumentWrite(e), "baska imzali program sayilir");
+        var none = BehaviorRules.Parse(RulesJson(d => d["syncClients"] = new object[0]));
+        e.Image = @"C:\Users\k\AppData\Local\Microsoft\OneDrive\OneDrive.exe";
+        Assert(new Classifier(none, null, p => true).CountsAsDocumentWrite(e), "liste imzali kurallardan gelir");
+    }
+
+    [Test] static void EngineOneDriveSyncAndOwnRunValueRaiseNothing()
+    {
+        string dir = NewDataDir();
+        var c = new FakeControl(); var s = new FakeSink();
+        var g = new GuardEngine(Rules(), dir, c, s);
+        string od = @"C:\Users\k\AppData\Local\Microsoft\OneDrive\OneDrive.exe";
+        g.SignatureCheck = p => p == od;
+        var decisions = new List<Decision>();
+        g.DecisionMade = (d, img) => decisions.Add(d);
+        var t0 = new DateTime(2026, 10, 29, 10, 0, 0, DateTimeKind.Utc);
+        g.OnEvent(new GuardEvent { EventId = 1, Pid = 6000, ParentPid = 900, Image = od, Time = t0 });
+        g.OnEvent(new GuardEvent { EventId = 13, Pid = 6000, Image = od, Time = t0.AddSeconds(1),
+            TargetObject = @"HKU\S-1-5-21-1\Software\Microsoft\Windows\CurrentVersion\Run\OneDrive", Details = "\"" + od + "\" /background" });
+        for (int i = 0; i < 200; i++)
+            g.OnEvent(new GuardEvent { EventId = 11, Pid = 6000, Image = od, Time = t0.AddSeconds(2).AddMilliseconds(i * 10),
+                TargetFilename = @"C:\Users\k\OneDrive\Masaüstü\klasor\f" + i + ".jpg" });
+        Assert(decisions.Count == 0, "esitleme ve kendi Run degeri uyari vermemeli: " + string.Join(",", decisions.Select(d => d.Score + "/" + string.Join(";", d.Reasons))));
+        Assert(c.Frozen.Count == 0 && !File.Exists(Path.Combine(dir, "findings.json")), "dondurma/bulgu yok");
+    }
+
     [Test] static void IsDocumentWriteDetectsTurkishFolders()
     {
         var e = new GuardEvent();
@@ -712,6 +782,8 @@ public static class GuardTests
         var e13 = SysmonReader.FromXml(File.ReadAllText(RepoPath("tests/guard/fixtures/sysmon-event-13.xml"), Encoding.UTF8));
         Assert(e13.EventId == 13 && e13.Pid == 4321, "olay 13 pid");
         Assert(e13.TargetObject.EndsWith(@"\Run\Oyun"), "hedef nesne");
+        Assert(e13.Details == @"C:\Users\x\Downloads\oyun.exe", "Details (Run degerinin verisi): " + e13.Details);
+        Assert(GuardReplay.Parse(new Dictionary<string, object> { { "EventId", 13 }, { "Details", "x" } }).Details == "x", "replay Details");
     }
 
     [Test] static void FromXmlMapsSourceTargetFieldsForEvent10()

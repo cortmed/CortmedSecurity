@@ -191,7 +191,7 @@ namespace Cortmed.Guard
     /// yeni bir cocuk surecin kacmamasini garanti eder. IPromptSink.Send (2 sn'ye kadar bekleyebilir)
     /// hicbir zaman _lock altinda cagrilmaz; gonderimler ayri _sendLock ile siralanir.
     /// Kok imajinin SHA-256'si Sysmon olayinda yoksa dosyadan kilit altinda hesaplanir (kok basina bir kez);
-    /// FileTrust.BaseScore (kok basina bir kez) ve FileTrust.Publisher (yalnizca karar aninda) da kilit
+    /// FileTrust.BaseScore (kok basina bir kez) ve FileTrust.Publisher (yalnizca karar aninda) ve yazanin imzasi (I7, imaj basina bir kez) da kilit
     /// altindadir. Bunlar olay islemeyi kisa sure bekletebilir; olaylar kaybolmaz, threadpool'da sirayla bekler.
     /// </summary>
     public class GuardEngine
@@ -252,10 +252,27 @@ namespace Cortmed.Guard
 
         string DataFile(string name) { return Path.Combine(_dataDir, name); }
 
+        // Imza denetimi (varsayilan FileTrust.IsValidlySigned); testler degistirebilir. Sonuc imaj yoluna gore
+        // onbellekte tutulur (calisan surecin dosyasi kilitlidir); onbellek 512 kayitta bosaltilir. _lock altinda cagrilir.
+        public Func<string, bool> SignatureCheck = FileTrust.IsValidlySigned;
+        readonly Dictionary<string, bool> _signed = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        bool IsSignedCached(string image)
+        {
+            if (string.IsNullOrEmpty(image)) return false;
+            bool v;
+            if (_signed.TryGetValue(image, out v)) return v;
+            var check = SignatureCheck;
+            try { v = check != null && check(image); } catch { v = false; }
+            if (_signed.Count >= 512) _signed.Clear();
+            _signed[image] = v;
+            return v;
+        }
+
         void SetRules(BehaviorRules r)
         {
             _rules = r;
-            _classifier = new Classifier(r);
+            _classifier = new Classifier(r, KnownFolders.Current, IsSignedCached);
             _board = new ScoreBoard(r);
             _baseScores.Clear();
             _lastWarnScore.Clear();
@@ -359,7 +376,7 @@ namespace Cortmed.Guard
                 if (Handle(d, image, decisions)) flush = true;
             }
 
-            if (Classifier.IsDocumentWrite(e))
+            if (_classifier.CountsAsDocumentWrite(e))
             {
                 int root = _tree.RootOf(e.Pid);
                 string image = ImageFor(root, e);

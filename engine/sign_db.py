@@ -31,7 +31,7 @@ FILES = ["android.cmdb", "windows.cmdb", "windows.yarc", "android_rules.json", "
 BEHAVIORS = ["Persistence", "TamperOtherApp", "HiddenScript", "DisableProtection", "Injection", "LsassAccess", "MassFileChange"]
 INT_KEYS = ["freezeAt", "warnAt", "windowSeconds", "massFileCount", "massFileSeconds", "trustedLocationBonus"]
 PATH_LIST_KEYS = ["neverFreeze", "trustedImages"]
-NAME_LIST_KEYS = ["launchers"]
+NAME_LIST_KEYS = ["launchers", "syncClients"]
 # "ad.exe" ya da "\klasor\ad.exe" (yol sonu); surucu harfi, "/" ve bos klasor yok
 NAME_PATTERN = re.compile(r"^(?:[^\\/:]+|(?:\\[^\\/:]+)+)\.exe$", re.IGNORECASE)
 MIN_POINTS, MAX_POINTS = -100, 200

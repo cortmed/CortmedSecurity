@@ -33,13 +33,24 @@ namespace Cortmed.Guard
 
         readonly BehaviorRules _rules;
         readonly KnownFolders _folders;
+        readonly Func<string, bool> _isSigned; // imaj gecerli imzali mi (motor verir; yoksa hicbiri imzali sayilmaz)
 
-        public Classifier(BehaviorRules rules) : this(rules, null) { }
+        public Classifier(BehaviorRules rules) : this(rules, null, null) { }
 
-        public Classifier(BehaviorRules rules, KnownFolders folders)
+        public Classifier(BehaviorRules rules, KnownFolders folders) : this(rules, folders, null) { }
+
+        public Classifier(BehaviorRules rules, KnownFolders folders, Func<string, bool> isSigned)
         {
             _rules = rules;
             _folders = folders ?? KnownFolders.Current;
+            _isSigned = isSigned;
+        }
+
+        bool IsSigned(string image)
+        {
+            if (_isSigned == null || string.IsNullOrEmpty(image)) return false;
+            try { return _isSigned(image); }
+            catch { return false; }
         }
 
         public List<Hit> Classify(GuardEvent e)
@@ -49,7 +60,11 @@ namespace Cortmed.Guard
 
             // Persistence
             if (e.EventId == 13 && (Has(e.TargetObject, "\\CurrentVersion\\Run\\") || Has(e.TargetObject, "\\RunOnce\\")))
-                Add(hits, Behavior.Persistence, e.Pid);
+            {
+                // Imzali bir programin kendi klasorundeki dosyayi acilisa yazmasi (Discord, OneDrive, Zoom...) puan almaz.
+                if (!(PointsIntoOwnFolder(e.Image, e.Details) && IsSigned(e.Image)))
+                    Add(hits, Behavior.Persistence, e.Pid);
+            }
             else if (e.EventId == 11 && Has(e.TargetFilename, "\\Start Menu\\Programs\\Startup\\"))
                 Add(hits, Behavior.Persistence, e.Pid);
             else if (e.EventId == 1 && FileName(e.Image).Equals("schtasks.exe", OIC) && (Has(e.CommandLine, "/create") || Has(e.CommandLine, "-create")))
@@ -87,6 +102,43 @@ namespace Cortmed.Guard
         {
             if (e == null || e.EventId != 11) return false;
             return HasAny(e.TargetFilename, DocFolders);
+        }
+
+        // MassFileChange'e sayilir mi: belge yazimi ve yazan, imzali bir esitleme istemcisi
+        // (kurallardaki syncClients: OneDrive, Dropbox, Google Drive, iCloud) degil.
+        public bool CountsAsDocumentWrite(GuardEvent e)
+        {
+            if (!IsDocumentWrite(e)) return false;
+            string name = FileName(e.Image);
+            foreach (string sc in _rules.SyncClients)
+                if (name.Equals(sc, OIC)) return !IsSigned(e.Image);
+            return true;
+        }
+
+        // Run degerinin verisindeki program yolu, yazanin klasorunun (ya da alt klasorunun) icinde mi.
+        // Veri "\"C:\a\b.exe\" --x" ya da "C:\a b\c.exe /x" bicimindedir; ".." ve %DEGISKEN% iceren yol kabul edilmez.
+        static bool PointsIntoOwnFolder(string writer, string details)
+        {
+            if (string.IsNullOrEmpty(writer) || string.IsNullOrEmpty(details)) return false;
+            int slash = writer.LastIndexOf('\\');
+            if (slash <= 0) return false;
+            string dir = writer.Substring(0, slash + 1);
+            string d = details.Trim();
+            string target;
+            if (d.StartsWith("\""))
+            {
+                int end = d.IndexOf('"', 1);
+                if (end < 0) return false;
+                target = d.Substring(1, end - 1);
+            }
+            else
+            {
+                int exe = d.IndexOf(".exe", OIC);
+                if (exe < 0) return false;
+                target = d.Substring(0, exe + 4);
+            }
+            if (target.IndexOf("..", StringComparison.Ordinal) >= 0 || target.IndexOf('%') >= 0 || target.IndexOf('/') >= 0) return false;
+            return target.Length > dir.Length && target.StartsWith(dir, OIC);
         }
 
         // Sysmon GrantedAccess "0x1010" bicimindedir; yoksa ya da okunamazsa isabet yok sayilir.

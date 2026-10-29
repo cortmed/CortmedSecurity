@@ -25,6 +25,8 @@ namespace Cortmed.Guard
         public HashSet<string> TrustedImages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Cocuklari kendi agacini baslatan programlar: dosya adi ("msedge.exe") ya da yol sonu ("\Discord\Update.exe").
         public HashSet<string> Launchers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Imzaliysa belge yazimlari MassFileChange'e sayilmayan esitleme istemcileri (dosya adi).
+        public HashSet<string> SyncClients = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public const int MinPoints = -100, MaxPoints = 200;
 
@@ -55,6 +57,7 @@ namespace Cortmed.Guard
             FillPaths(root, "neverFreeze", r.NeverFreeze);
             FillPaths(root, "trustedImages", r.TrustedImages);
             FillNames(root, "launchers", r.Launchers);
+            FillNames(root, "syncClients", r.SyncClients);
             Validate(r);
             return r;
         }

@@ -98,6 +98,7 @@ namespace Cortmed.Guard
             ev.CommandLine = Get(data, "CommandLine");
             ev.TargetObject = Get(data, "TargetObject");
             ev.TargetFilename = Get(data, "TargetFilename");
+            ev.Details = Get(data, "Details");
             ev.Hashes = Get(data, "Hashes");
             return ev;
         }

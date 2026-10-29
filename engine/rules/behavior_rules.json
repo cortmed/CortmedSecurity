@@ -41,5 +41,8 @@
   "launchers": [
     "msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe",
     "Discord.exe", "\\Discord\\Update.exe", "WinRAR.exe", "7zFM.exe", "Telegram.exe", "Teams.exe"
+  ],
+  "syncClients": [
+    "OneDrive.exe", "Dropbox.exe", "GoogleDriveFS.exe", "iCloudDrive.exe"
   ]
 }

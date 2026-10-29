@@ -161,6 +161,7 @@ if (-not $py) {
             'neverFreeze eksik'       = { param($j) $j.PSObject.Properties.Remove('neverFreeze') }
             'launchers eksik'         = { param($j) $j.PSObject.Properties.Remove('launchers') }
             'launchers tam yol'       = { param($j) $j.launchers = @('C:\x\a.exe') }
+            'syncClients eksik'       = { param($j) $j.PSObject.Properties.Remove('syncClients') }
         }
         $n = 0
         foreach ($name in $variants.Keys) {
