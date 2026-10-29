@@ -10,7 +10,6 @@ namespace Cortmed.Guard
         static readonly StringComparison OIC = StringComparison.OrdinalIgnoreCase;
 
         static readonly string[] ScriptHosts = { "powershell.exe", "pwsh.exe", "cmd.exe", "mshta.exe", "wscript.exe", "cscript.exe" };
-        static readonly string[] HiddenMarkers = { "-enc", "-encodedcommand", "-w hidden", "-windowstyle hidden", "frombase64string" };
         static readonly string[] Browsers = { "chrome.exe", "msedge.exe", "brave.exe" };
         static readonly string[] DocFolders = { "\\Documents\\", "\\Desktop\\", "\\Pictures\\", "\\Videos\\", "\\Music\\" };
 
@@ -31,7 +30,7 @@ namespace Cortmed.Guard
                 Add(hits, Behavior.Persistence, e.Pid);
             else if (e.EventId == 11 && Has(e.TargetFilename, "\\Start Menu\\Programs\\Startup\\"))
                 Add(hits, Behavior.Persistence, e.Pid);
-            else if (e.EventId == 1 && FileName(e.Image).Equals("schtasks.exe", OIC) && Has(e.CommandLine, "/create"))
+            else if (e.EventId == 1 && FileName(e.Image).Equals("schtasks.exe", OIC) && (Has(e.CommandLine, "/create") || Has(e.CommandLine, "-create")))
                 Add(hits, Behavior.Persistence, e.ParentPid);
 
             // TamperOtherApp
@@ -39,7 +38,7 @@ namespace Cortmed.Guard
                 Add(hits, Behavior.TamperOtherApp, e.Pid);
 
             // HiddenScript
-            if (e.EventId == 1 && IsOneOf(FileName(e.Image), ScriptHosts) && HasAny(e.CommandLine, HiddenMarkers))
+            if (e.EventId == 1 && IsOneOf(FileName(e.Image), ScriptHosts) && IsHiddenCommand(e.CommandLine))
                 Add(hits, Behavior.HiddenScript, e.ParentPid);
 
             // DisableProtection
@@ -73,6 +72,46 @@ namespace Cortmed.Guard
             string reason;
             if (!_rules.Reasons.TryGetValue(b, out reason)) reason = b.ToString();
             hits.Add(new Hit { Behavior = b, Pid = pid, Reason = reason });
+        }
+
+        // -e/-enc/.../-encodedcommand, -w|-windowstyle hidden (tam sozcuk), frombase64string (alt dize).
+        static bool IsHiddenCommand(string cmd)
+        {
+            if (string.IsNullOrEmpty(cmd)) return false;
+            if (cmd.IndexOf("frombase64string", OIC) >= 0) return true;
+            var tokens = Tokenize(cmd);
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                string t = tokens[i];
+                if (t.Length < 2 || (t[0] != '-' && t[0] != '/')) continue;
+                string opt = t.Substring(1).ToLowerInvariant();
+                if (opt == "ec" || (opt[0] == 'e' && "encodedcommand".StartsWith(opt, StringComparison.Ordinal)))
+                    return true;
+                if ((opt == "w" || opt == "windowstyle") && i + 1 < tokens.Count
+                    && tokens[i + 1].Equals("hidden", OIC))
+                    return true;
+            }
+            return false;
+        }
+
+        // Bosluklarla boler, cift tirnak icini tek sozcuk sayar (tirnaklar atilir).
+        static List<string> Tokenize(string s)
+        {
+            var list = new List<string>();
+            var sb = new System.Text.StringBuilder();
+            bool inQ = false;
+            foreach (char c in s)
+            {
+                if (c == '"') { inQ = !inQ; continue; }
+                if (!inQ && char.IsWhiteSpace(c))
+                {
+                    if (sb.Length > 0) { list.Add(sb.ToString()); sb.Length = 0; }
+                    continue;
+                }
+                sb.Append(c);
+            }
+            if (sb.Length > 0) list.Add(sb.ToString());
+            return list;
         }
 
         static bool IsTamper(GuardEvent e)

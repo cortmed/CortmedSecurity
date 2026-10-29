@@ -150,6 +150,65 @@ public static class GuardTests
         Assert(hits.Count == 1 && hits[0].Behavior == Behavior.TamperOtherApp, "evil");
     }
 
+    static List<Hit> Run1(int id, string image, string cmd, string obj, string file, int pid, int target)
+    {
+        var e = new GuardEvent();
+        e.EventId = id; e.Pid = pid; e.ParentPid = pid + 1; e.TargetPid = target;
+        e.Image = image; e.CommandLine = cmd; e.TargetObject = obj; e.TargetFilename = file;
+        return new Classifier(Rules()).Classify(e);
+    }
+
+    const string PS = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+
+    [Test] static void EncodingParameterIsNotHiddenScript()
+    {
+        Assert(Run1(1, PS, "powershell -Command \"x | Out-File -Encoding utf8\"", null, null, 10, 0).Count == 0, "-Encoding");
+        Assert(Run1(1, PS, "powershell -ExecutionPolicy Bypass -File a.ps1", null, null, 10, 0).Count == 0, "-ExecutionPolicy");
+        Assert(Run1(1, PS, "powershell -w normal a.ps1", null, null, 10, 0).Count == 0, "-w normal");
+    }
+
+    [Test] static void EncodedAndHiddenVariantsAreDetected()
+    {
+        string[] cmds = { "powershell -e AAA", "powershell -EC AAA", "powershell /enc AAA", "powershell -EncodedCommand AAA",
+                          "powershell -WindowStyle Hidden a.ps1", "powershell -w hidden a.ps1",
+                          "powershell \"[Convert]::FromBase64String('AA')\"" };
+        foreach (var c in cmds)
+        {
+            var h = Run1(1, PS, c, null, null, 10, 0);
+            Assert(h.Count == 1 && h[0].Behavior == Behavior.HiddenScript && h[0].Pid == 11, c);
+        }
+    }
+
+    [Test] static void SchtasksCreateVariants()
+    {
+        string sch = @"C:\Windows\System32\schtasks.exe";
+        Assert(Run1(1, sch, "schtasks /query", null, null, 10, 0).Count == 0, "query");
+        var h = Run1(1, sch, "schtasks -create /tn x", null, null, 10, 0);
+        Assert(h.Count == 1 && h[0].Behavior == Behavior.Persistence && h[0].Pid == 11, "-create");
+    }
+
+    [Test] static void InjectionIntoSelfIsNotHit()
+    {
+        Assert(Run1(8, @"C:\x\a.exe", null, null, null, 50, 50).Count == 0);
+    }
+
+    [Test] static void RunOnceAndUpperCasePathsMatch()
+    {
+        var h = Run1(13, @"C:\x\a.exe", null, @"HKU\S\Software\Microsoft\Windows\CurrentVersion\RunOnce\x", null, 10, 0);
+        Assert(h.Count == 1 && h[0].Behavior == Behavior.Persistence, "runonce");
+        h = Run1(13, @"C:\x\a.exe", null, @"HKU\S\SOFTWARE\MICROSOFT\WINDOWS\CURRENTVERSION\RUN\X", null, 10, 0);
+        Assert(h.Count == 1 && h[0].Behavior == Behavior.Persistence, "upper run");
+        h = Run1(11, @"C:\x\a.exe", null, null, @"C:\U\APPDATA\LOCAL\DISCORD\DISCORD_DESKTOP_CORE\INDEX.JS", 10, 0);
+        Assert(h.Count == 1 && h[0].Behavior == Behavior.TamperOtherApp, "upper core");
+    }
+
+    [Test] static void FakeDiscordCoreUnderTempFromPowerShellIsTamper()
+    {
+        var h = Run1(11, PS, null, null,
+            @"C:\Users\k\AppData\Local\Temp\CortmedFakeDiscord\app\modules\discord_desktop_core\index.js", 10, 0);
+        Assert(h.Count == 1 && h[0].Behavior == Behavior.TamperOtherApp, "fake core");
+    }
+
     [Test] static void TrustedImageMayTouchLsass()
     {
         var e = new GuardEvent();
