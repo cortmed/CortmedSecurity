@@ -372,6 +372,16 @@ public static class GuardTests
 
     [Test] static void NotepadIsTrusted() { Assert(FileTrust.BaseScore(@"C:\Windows\System32\notepad.exe", Rules()) == -30); }
 
+    [Test] static void SignedInWindowsTempGetsNoBonus() { Assert(FileTrust.LocationScore(@"C:\Windows\Temp\x.exe", true, Rules()) == 0); }
+
+    [Test] static void SignedInLookalikeProgramFilesGetsNoBonus() { Assert(FileTrust.LocationScore(@"C:\Program Files Evil\x.exe", true, Rules()) == 0); }
+
+    [Test] static void SignedInProgramFilesGetsBonus() { Assert(FileTrust.LocationScore(@"C:\Program Files\x\y.exe", true, Rules()) == -30); }
+
+    [Test] static void UnsignedInWindowsTempScoresThirty() { Assert(FileTrust.LocationScore(@"C:\Windows\Temp\x.exe", false, Rules()) == 30); }
+
+    [Test] static void UnsignedInOneDriveDesktopScoresThirty() { Assert(FileTrust.LocationScore(@"C:\Users\x\OneDrive\Desktop\a.exe", false, Rules()) == 30); }
+
     [Test] static void MissingFileScoresFifteen() { Assert(FileTrust.BaseScore(@"C:\nonexistent\nope.exe", Rules()) == 15); }
 
     [Test] static void UnsignedExeInTempScoresThirty()

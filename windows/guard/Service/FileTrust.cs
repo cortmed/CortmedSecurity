@@ -12,7 +12,7 @@ namespace Cortmed.Guard
     public static class FileTrust
     {
         static readonly Regex UserFolder = new Regex(
-            @"\\Users\\(Public\\|[^\\]+\\(Downloads|Desktop|AppData)\\)|\\Windows\\Temp\\",
+            @"\\Users\\(Public\\|[^\\]+\\(Downloads|Desktop|AppData)\\|[^\\]+\\OneDrive[^\\]*\\(Desktop|Downloads|Documents|Belgeler|Masaüstü)\\)|\\Windows\\Temp\\",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public static int BaseScore(string imagePath, BehaviorRules r)
@@ -21,11 +21,18 @@ namespace Cortmed.Guard
             {
                 if (string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath)) return 15;
                 string full = Path.GetFullPath(imagePath);
-                if (IsValidlySigned(full))
-                    return IsTrustedLocation(full) ? r.TrustedLocationBonus : 0;
-                return UserFolder.IsMatch(full) ? 30 : 15;
+                return LocationScore(full, IsValidlySigned(full), r);
             }
             catch { return 15; }
+        }
+
+        // Saf karar: imzali -> guvenilir konumda ve kullanici klasoru degilse bonus, aksi 0;
+        // imzasiz -> 15, kullanici klasorunde 30.
+        internal static int LocationScore(string fullPath, bool signed, BehaviorRules r)
+        {
+            bool user = UserFolder.IsMatch(fullPath);
+            if (signed) return IsTrustedLocation(fullPath) && !user ? r.TrustedLocationBonus : 0;
+            return user ? 30 : 15;
         }
 
         static bool IsTrustedLocation(string full)
@@ -90,7 +97,8 @@ namespace Cortmed.Guard
         const uint WTD_CHOICE_CATALOG = 2;
         const uint WTD_STATEACTION_VERIFY = 1;
         const uint WTD_STATEACTION_CLOSE = 2;
-        const uint WTD_SAFER_FLAG = 0x100;
+        const uint WTD_REVOCATION_CHECK_NONE = 0x10;
+        const uint WTD_CACHE_ONLY_URL_RETRIEVAL = 0x1000;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct WINTRUST_FILE_INFO
@@ -175,6 +183,7 @@ namespace Cortmed.Guard
             data.dwUnionChoice = choice;
             data.pInfo = infoPtr;
             data.dwStateAction = WTD_STATEACTION_VERIFY;
+            data.dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
             Guid action = ActionGenericVerifyV2;
             try
             {
