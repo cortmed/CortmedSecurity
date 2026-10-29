@@ -232,6 +232,112 @@ public static class GuardTests
         Assert(!Classifier.IsDocumentWrite(e), "not event 11");
     }
 
+    // ---- surec agaci / puan tahtasi ----
+
+    static GuardEvent Start(int pid, int ppid, string image)
+    {
+        var e = new GuardEvent();
+        e.EventId = 1; e.Pid = pid; e.ParentPid = ppid; e.Image = image;
+        return e;
+    }
+
+    static Hit Hit(Behavior b)
+    {
+        var h = new Hit();
+        h.Behavior = b;
+        return h;
+    }
+
+    [Test] static void RootOfGrandchildIsTopProcess()
+    {
+        var t = new ProcessTree();
+        t.OnProcessStart(Start(10, 1, @"C:\Windows\explorer.exe"));
+        t.OnProcessStart(Start(20, 10, @"C:\x\a.exe"));
+        t.OnProcessStart(Start(30, 20, @"C:\Windows\System32\cmd.exe"));
+        t.OnProcessStart(Start(40, 30, @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"));
+        Assert(t.RootOf(40) == 20, "powershell -> a");
+        Assert(t.RootOf(30) == 20 && t.RootOf(20) == 20, "cmd, a");
+        Assert(t.RootOf(999) == 999, "unknown is own root");
+        var sub = t.Subtree(20);
+        Assert(sub.Count == 3 && sub.Contains(20) && sub.Contains(30) && sub.Contains(40), "subtree");
+        Assert(t.ImageOf(30).EndsWith("cmd.exe"), "image");
+    }
+
+    [Test] static void ExitedParentDoesNotBreakRootOfChildren()
+    {
+        var t = new ProcessTree();
+        t.OnProcessStart(Start(10, 1, @"C:\Windows\EXPLORER.EXE"));
+        t.OnProcessStart(Start(20, 10, @"C:\x\a.exe"));
+        t.OnProcessStart(Start(30, 20, @"C:\x\b.exe"));
+        t.OnProcessExit(20);
+        Assert(t.RootOf(30) == 20, "root survives parent exit");
+        t.OnProcessExit(30);
+        Assert(t.RootOf(30) == 30, "forgotten after all gone");
+    }
+
+    [Test] static void ScoreCrossesFreezeWithBaseAndTwoBehaviors()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        Assert(sb.Add(100, 30, Hit(Behavior.Persistence), t).Level == DecisionLevel.Warn);
+        var d = sb.Add(100, 30, Hit(Behavior.TamperOtherApp), t.AddSeconds(5));
+        Assert(d.Level == DecisionLevel.Freeze && d.Reasons.Count == 2 && d.Score == 115, "freeze");
+    }
+
+    [Test] static void LowScoreIsLog()
+    {
+        var sb = new ScoreBoard(Rules());
+        var d = sb.Add(1, 0, Hit(Behavior.HiddenScript), DateTime.Now);
+        Assert(d.Level == DecisionLevel.Log && d.Score == 30 && d.RootPid == 1);
+    }
+
+    [Test] static void HitsOlderThanWindowExpire()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        sb.Add(100, 0, Hit(Behavior.TamperOtherApp), t);
+        var d = sb.Add(100, 0, Hit(Behavior.Persistence), t.AddSeconds(301));
+        Assert(d.Score == 35 && d.Reasons.Count == 1 && d.Level == DecisionLevel.Log, "expired");
+    }
+
+    [Test] static void SameBehaviorCountsOnce()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        sb.Add(100, 0, Hit(Behavior.Persistence), t);
+        var d = sb.Add(100, 0, Hit(Behavior.Persistence), t.AddSeconds(1));
+        Assert(d.Score == 35 && d.Reasons.Count == 1, "once");
+    }
+
+    [Test] static void FiftyOneDocumentWritesInTenSecondsIsMassChange()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        Decision d = null;
+        for (int i = 0; i < 50; i++) d = sb.AddDocumentWrite(7, 0, t.AddMilliseconds(i * 100));
+        Assert(d.Score == 0 && d.Reasons.Count == 0, "50 is not enough");
+        d = sb.AddDocumentWrite(7, 0, t.AddSeconds(6));
+        Assert(d.Score == 70 && d.Reasons.Count == 1 && d.Reasons[0] == Rules().Reasons[Behavior.MassFileChange], "51st");
+        d = sb.AddDocumentWrite(7, 0, t.AddSeconds(7));
+        Assert(d.Score == 70 && d.Reasons.Count == 1, "once per window");
+    }
+
+    [Test] static void SlowDocumentWritesAreNotMassChange()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        Decision d = null;
+        for (int i = 0; i < 80; i++) d = sb.AddDocumentWrite(7, 0, t.AddSeconds(i * 2));
+        Assert(d.Score == 0, "slow");
+    }
+
+    [Test] static void NoSecondFreezeUntilForget()
+    {
+        var sb = new ScoreBoard(Rules()); var t = DateTime.Now;
+        Assert(sb.Add(5, 0, Hit(Behavior.LsassAccess), t).Level == DecisionLevel.Warn);
+        Assert(sb.Add(5, 0, Hit(Behavior.DisableProtection), t).Level == DecisionLevel.Freeze, "first freeze");
+        var d = sb.Add(5, 0, Hit(Behavior.Injection), t);
+        Assert(d.Level != DecisionLevel.Freeze, "no second freeze");
+        sb.Forget(5);
+        sb.Add(5, 0, Hit(Behavior.LsassAccess), t);
+        Assert(sb.Add(5, 0, Hit(Behavior.DisableProtection), t).Level == DecisionLevel.Freeze, "after forget");
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
