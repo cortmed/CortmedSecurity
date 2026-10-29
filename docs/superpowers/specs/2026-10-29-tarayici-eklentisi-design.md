@@ -75,7 +75,7 @@ listesi yalnızca bu eklentiye izin verir.
     ve sonucu döndürür: `{"level":"RED|YELLOW|OK","title":"...","reasons":[...]}`.
 - **Bildirim:**
   - Temizse: "✓ dosya.exe temiz görünüyor".
-  - Tehlikeliyse kırmızı bildirim ve **[Ayrıntılar]** düğmesi; Cortmed panelinde aynı dosyanın raporu açılır.
+  - Tehlikeliyse kırmızı bildirim; metnin sonunda "Ayrıntılar için Cortmed panelini açın." yazar. (Köprü komut almadığı için düğme yok.)
 - **Dosyaya dokunulmaz.** Uyar-sadece varsayılanı geçerlidir.
 - **Köprü yoksa** (Cortmed kurulu değilse): açılır pencerede "Bu özellik için Cortmed Security kurulu olmalı" yazar.
 - **Panel:** köprü her çağrıda `data\browser-lastseen.txt` dosyasını yazar. 7 gün içindeyse panel "Tarayıcı koruması açık (✓)" gösterir.
@@ -83,12 +83,13 @@ listesi yalnızca bu eklentiye izin verir.
 ## 4. Güvenlik ve gizlilik
 
 1. **Şifre bilgisayarda kalır.** Şifre ya da tam özeti hiçbir yere gönderilmez. Yalnızca SHA-1'in ilk 5 karakteri HIBP'ye gider (k-anonimlik).
-2. **Saklama:** parmak izi yavaş bir türetmeyle (PBKDF2) ve tuzla saklanır. Disk çalınsa bile şifreler geri çıkarılamaz.
-3. **Köprünün sınırları:** köprü yalnızca tek bir dosya yolu kabul eder; komut almaz. Yol tam yol olmalı, dosya var olmalı
+2. **Saklama:** parmak izi yavaş bir türetmeyle (PBKDF2) ve tuzla saklanır; şifrenin kendisi diske yazılmaz. Disk çalınırsa zayıf şifreler deneme yanılmayla bulunabilir, güçlü şifreler pratikte bulunamaz.
+3. **Bankalar ve SMS kodları:** yalnızca rakamdan oluşan 8 haneye kadar değerler (banka şifresi, SMS kodu) ve `one-time-code` alanları hiç kontrol edilmez.
+4. **Köprünün sınırları:** köprü yalnızca tek bir dosya yolu kabul eder; komut almaz. Yol tam yol olmalı, dosya var olmalı
    ve `%USERPROFILE%` altında bulunmalıdır. Mesajlar 64 KB'tan büyük olamaz.
-4. **İzinler:** `storage`, `downloads`, `notifications`, `nativeMessaging` ve tüm sitelerde içerik betiği
+5. **İzinler:** `storage`, `downloads`, `notifications`, `nativeMessaging` ve tüm sitelerde içerik betiği
    (yalnızca şifre alanı gönderimini dinler; sayfa içeriğini okumaz, hiçbir yere göndermez).
-5. **Uzak kod yok.** Eklenti kodu uzaktan yüklenmez; MFA listesi pakete gömülüdür.
+6. **Uzak kod yok.** Eklenti kodu uzaktan yüklenmez; MFA listesi pakete gömülüdür.
 
 ## 5. Dağıtım (sıfır maliyet)
 

@@ -210,7 +210,7 @@ Bakım yapacak kişi için not: yayımlandıktan sonra mağaza eklentiye **farkl
 4. Gönderildikten sonra başka bir sayfaya yönlendiren bir girişte `password123` kullanın. Kart **bir sonraki sayfada** çıkmalı.
 5. discord.com'u açın. MFA kartı **bir kez** çıkmalı; **Sonra**'ya basarsanız 7 gün sonra tekrar gelir.
 6. eicar.org'dan `eicar_com.zip` dosyasını indirin (zip taranır; `eicar.com` taranmaz). "Tehlikeli olabilir" bildirimi gelmeli.
-   Defender silerse bu normaldir; Cortmed bildirimi yine de gelmeli.
+   Defender dosyayı Cortmed'den önce silerse Cortmed bildirimi gelmeyebilir; bu normaldir. Denemeyi Defender'ın gerçek zamanlı korumasını Sandbox içinde kapatarak tekrarlayın.
 7. İmzasız küçük bir program (`.exe`) indirin. Başlığı **"Tanınmayan program"** olan **sarı** bir bildirim gelmeli.
 8. Panelde **Tarayıcı koruması açık** yazmalı.
 
