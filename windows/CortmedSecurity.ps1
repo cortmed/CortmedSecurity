@@ -15,11 +15,9 @@ param(
     [ValidateSet('Panel', 'Watch', 'Daily', 'Update', 'ScanFile', 'InstallClamAV', 'Lib')]
     [string]$Mode = 'Panel',
     [string]$Path,
-    [switch]$Json
+    # -Json yalnizca ScanFile icin. Degisken adi $ScanJson: betigi nokta ile yukleyenlerin (Lib) $json'u [switch] olmasin.
+    [Alias('Json')][switch]$ScanJson
 )
-# -Json yalnizca ScanFile icin. [switch] tur kisiti kalirsa, betigi nokta ile yukleyenlerin (Lib) $json degiskenleri bozulur.
-$ScanJson = [bool]$Json
-Remove-Variable -Name Json
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12

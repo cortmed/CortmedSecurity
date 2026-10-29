@@ -3,13 +3,15 @@
 // CortmedSecurity.ps1 -Mode ScanFile -Json ile tarar ve {level,title,reasons} dondurur.
 // Komut almaz; her surec tek bir istegi isler ve cikar.
 // C# 5 (csc v4). Derleme: /codepage:65001 /reference:System.Web.Extensions.dll
-// Yalnizca testler icin: --scan-cmd <exe> [args...] (tarama komutu), --data <klasor> (browser-lastseen.txt yeri).
+// Yalnizca testler icin: --data <klasor> (browser-lastseen.txt yeri), --timeout-ms <ms>,
+// --scan-cmd <exe> [args...] (tarama komutu; argumanlari --data / --timeout-ms ya da sona kadar).
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -19,7 +21,7 @@ namespace Cortmed.Browser
     public static class BrowserHost
     {
         const int MaxMessage = 65536;
-        const int ScanTimeoutMs = 120000;
+        static int ScanTimeoutMs = 120000;
         const int MaxText = 200;
         const int MaxReasons = 5;
         const int MaxKeptLines = 64;
@@ -43,13 +45,19 @@ namespace Cortmed.Browser
             try
             {
                 output = Console.OpenStandardOutput();
+                // Chrome'un stdin/stdout/stderr borulari tarama sureclerine miras kalmasin
+                foreach (int std in new int[] { -10, -11, -12 })
+                {
+                    try { SetHandleInformation(GetStdHandle(std), HandleFlagInherit, 0); } catch (Exception) { }
+                }
                 string scanExe = null;
                 List<string> scanArgs = new List<string>();
                 string dataDir = null;
                 ParseArgs(args, ref scanExe, scanArgs, ref dataDir);
                 if (dataDir == null)
                 {
-                    dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CortmedSecurity", "data");
+                    // Panelin okudugu data\ klasoru: kopru Cortmed klasorunde, CortmedSecurity.ps1'in yaninda durur
+                    dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
                 }
                 Dictionary<string, object> reply = Handle(Console.OpenStandardInput(), scanExe, scanArgs, dataDir);
                 replied = true;
@@ -74,10 +82,15 @@ namespace Cortmed.Browser
                 {
                     dataDir = args[++i];
                 }
+                else if (args[i] == "--timeout-ms" && i + 1 < args.Length)
+                {
+                    int ms;
+                    if (int.TryParse(args[++i], NumberStyles.None, CultureInfo.InvariantCulture, out ms) && ms > 0) ScanTimeoutMs = ms;
+                }
                 else if (args[i] == "--scan-cmd" && i + 1 < args.Length)
                 {
                     scanExe = args[++i];
-                    while (i + 1 < args.Length && args[i + 1] != "--data") scanArgs.Add(args[++i]);
+                    while (i + 1 < args.Length && args[i + 1] != "--data" && args[i + 1] != "--timeout-ms") scanArgs.Add(args[++i]);
                 }
             }
         }
@@ -150,7 +163,7 @@ namespace Cortmed.Browser
         {
             full = null;
             if (string.IsNullOrEmpty(path)) return TitleBadPath;
-            if (path.IndexOf('"') >= 0 || path.IndexOf('\0') >= 0) return TitleBadPath;
+            if (path.IndexOfAny(new char[] { '"', '\0', '*', '?' }) >= 0) return TitleBadPath;
             if (path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal) ||
                 path.StartsWith(@"\??\", StringComparison.Ordinal)) return TitleBadPath;
             if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal) ||
@@ -169,8 +182,52 @@ namespace Cortmed.Browser
             FileAttributes attr;
             try { attr = File.GetAttributes(full); }
             catch (Exception) { return TitleMissing; }
-            if ((attr & FileAttributes.ReparsePoint) != 0) return TitleReparse;
+            if ((attr & FileAttributes.ReparsePoint) != 0)
+            {
+                // Yalnizca bulut dosyalari (OneDrive) kabul; etiket okunamazsa ya da baska bir turse ret
+                uint tag;
+                if (!TryGetReparseTag(full, out tag) || !IsAllowedReparseTag(tag)) return TitleReparse;
+            }
             return null;
+        }
+
+        /// Bulut dosyasi ailesi (IO_REPARSE_TAG_CLOUD, CLOUD_1..F: 0x9000x01A) kabul; sembolik bag, junction,
+        /// dedup ve digerleri ret.
+        public static bool IsAllowedReparseTag(uint tag)
+        {
+            return (tag & 0xFFFF0FFFu) == 0x9000001Au;
+        }
+
+        static bool TryGetReparseTag(string path, out uint tag)
+        {
+            tag = 0;
+            WIN32_FIND_DATAW data;
+            IntPtr h = FindFirstFileW(path, out data);
+            if (h == IntPtr.Zero || h == InvalidHandle) return false;
+            FindClose(h);
+            if ((data.dwFileAttributes & 0x400) == 0) return false;
+            tag = data.dwReserved0;
+            return true;
+        }
+
+        // Tarama ve onun butun alt surecleri bu is nesnesinde; tutamac kapaninca hepsi sonlanir
+        static IntPtr CreateKillOnCloseJob()
+        {
+            try
+            {
+                IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
+                if (job == IntPtr.Zero) return IntPtr.Zero;
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                info.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref info,
+                    (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))))
+                {
+                    CloseHandle(job);
+                    return IntPtr.Zero;
+                }
+                return job;
+            }
+            catch (Exception) { return IntPtr.Zero; }
         }
 
         static Dictionary<string, object> RunScan(string full, string scanExe, List<string> scanArgs)
@@ -187,7 +244,7 @@ namespace Cortmed.Browser
             {
                 // PATH'e guvenilmez: her zaman System32 altindaki Windows PowerShell
                 exe = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
-                a.Add("-NoProfile"); a.Add("-ExecutionPolicy"); a.Add("Bypass");
+                a.Add("-NoProfile"); a.Add("-NonInteractive"); a.Add("-ExecutionPolicy"); a.Add("Bypass");
                 a.Add("-File"); a.Add(Path.Combine(hostDir, "CortmedSecurity.ps1"));
                 a.Add("-Mode"); a.Add("ScanFile"); a.Add("-Json");
             }
@@ -203,42 +260,63 @@ namespace Cortmed.Browser
             psi.StandardOutputEncoding = new UTF8Encoding(false);
             psi.StandardErrorEncoding = new UTF8Encoding(false);
 
-            Process p;
-            try { p = Process.Start(psi); }
-            catch (Exception) { return Error(TitleNoStart); }
-            if (p == null) return Error(TitleNoStart);
-
-            using (p)
+            IntPtr job = CreateKillOnCloseJob();
+            try
             {
-                // Cocuk surec Chrome'un stdin/stdout borularina asla dokunmaz
-                try { p.StandardInput.Close(); } catch (Exception) { }
-                List<string> lines = new List<string>();
-                object gate = new object();
-                ManualResetEvent outDone = new ManualResetEvent(false);
-                p.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                Process p;
+                try { p = Process.Start(psi); }
+                catch (Exception) { return Error(TitleNoStart); }
+                if (p == null) return Error(TitleNoStart);
+                using (p)
                 {
-                    if (e.Data == null) { outDone.Set(); return; }
-                    lock (gate)
+                    // Baslar baslamaz is nesnesine (en iyi caba): zaman asiminda butun agac kapanir
+                    bool inJob = false;
+                    if (job != IntPtr.Zero)
                     {
-                        lines.Add(e.Data);
-                        if (lines.Count > MaxKeptLines) lines.RemoveAt(0);
+                        try { inJob = AssignProcessToJobObject(job, p.Handle); } catch (Exception) { inJob = false; }
                     }
-                };
-                p.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { };
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
-                if (!p.WaitForExit(ScanTimeoutMs))
-                {
-                    try { p.Kill(); } catch (Exception) { }
-                    try { p.WaitForExit(5000); } catch (Exception) { }
-                    return Error(TitleTimeout);
+                    return WaitForScan(p, job, inJob);
                 }
-                // Ciktinin sonu (EOF) en fazla 5 sn beklenir; boruyu tutan bir torun surec kopruyu kilitlemesin
-                outDone.WaitOne(5000);
-                List<string> copy;
-                lock (gate) copy = new List<string>(lines);
-                return ParseScanOutput(copy);
             }
+            finally
+            {
+                // KILL_ON_JOB_CLOSE: geride kalan alt surecler de sonlanir
+                if (job != IntPtr.Zero) CloseHandle(job);
+            }
+        }
+
+        static Dictionary<string, object> WaitForScan(Process p, IntPtr job, bool inJob)
+        {
+            // stdin/stdout/stderr kendi borularimiza yonlendirildi; Chrome'un std tutamaclari Main'de
+            // miras disi birakildi. stdin hemen kapatilir: tarama hicbir girdi beklemez.
+            try { p.StandardInput.Close(); } catch (Exception) { }
+            List<string> lines = new List<string>();
+            object gate = new object();
+            ManualResetEvent outDone = new ManualResetEvent(false);
+            p.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+            {
+                if (e.Data == null) { outDone.Set(); return; }
+                lock (gate)
+                {
+                    lines.Add(e.Data);
+                    if (lines.Count > MaxKeptLines) lines.RemoveAt(0);
+                }
+            };
+            p.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { };
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            if (!p.WaitForExit(ScanTimeoutMs))
+            {
+                if (inJob) { try { TerminateJobObject(job, 1); } catch (Exception) { } }
+                try { if (!p.HasExited) p.Kill(); } catch (Exception) { }
+                try { p.WaitForExit(5000); } catch (Exception) { }
+                return Error(TitleTimeout);
+            }
+            // Ciktinin sonu (EOF) en fazla 5 sn beklenir; boruyu tutan bir torun surec kopruyu kilitlemesin
+            outDone.WaitOne(5000);
+            List<string> copy;
+            lock (gate) copy = new List<string>(lines);
+            return ParseScanOutput(copy);
         }
 
         static Dictionary<string, object> ParseScanOutput(List<string> lines)
@@ -343,5 +421,82 @@ namespace Cortmed.Browser
             sb.Append('"');
             return sb.ToString();
         }
+
+        // ------------------------------------------------------------ Win32
+
+        static readonly IntPtr InvalidHandle = new IntPtr(-1);
+        const uint HandleFlagInherit = 0x1;
+        const int JobObjectExtendedLimitInformation = 9;
+        const uint JobObjectLimitKillOnJobClose = 0x2000;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct WIN32_FIND_DATAW
+        {
+            public uint dwFileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+            public uint nFileSizeHigh;
+            public uint nFileSizeLow;
+            public uint dwReserved0;
+            public uint dwReserved1;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string cFileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string cAlternateFileName;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct IO_COUNTERS
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        {
+            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+            public IO_COUNTERS IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr FindFirstFileW(string lpFileName, out WIN32_FIND_DATAW lpFindFileData);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool FindClose(IntPtr hFindFile);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetInformationJobObject(IntPtr hJob, int infoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, uint cbInfo);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateJobObject(IntPtr hJob, uint exitCode);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr GetStdHandle(int nStdHandle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
     }
 }

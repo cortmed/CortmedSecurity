@@ -627,7 +627,20 @@ try {
     }
     Check 'CortmedBrowserHost.cs derlenir (C# 5, csc v4)' ((Test-Path $hostSrc) -and ($LASTEXITCODE -eq 0) -and (Test-Path $hExe)) $hOut
     $hostSrcTxt = if (Test-Path $hostSrc) { Get-Content $hostSrc -Raw -Encoding UTF8 } else { '' }
-    Check 'kopru PATH''e guvenmez (System32 powershell)' ($hostSrcTxt -match 'Environment\.SystemDirectory' -and $hostSrcTxt -match 'WindowsPowerShell') ''
+    Check 'kopru PATH''e guvenmez (System32 powershell, -NonInteractive)' ($hostSrcTxt -match 'Environment\.SystemDirectory' -and $hostSrcTxt -match 'WindowsPowerShell' -and $hostSrcTxt -match '"-NonInteractive"') ''
+
+    # Yeniden ayristirma etiketi karari: yalnizca bulut ailesi (OneDrive) kabul, digerleri ret
+    $tagWhy = 'derlenemedi'
+    try {
+        if (-not ('Cortmed.Browser.BrowserHost' -as [type])) {
+            Add-Type -AssemblyName System.Web.Extensions
+            Add-Type -TypeDefinition $hostSrcTxt -ReferencedAssemblies ([System.Web.Script.Serialization.JavaScriptSerializer].Assembly.Location)
+        }
+        $tagBad = @(@('9000001A', '9000101A', '9000F01A') | Where-Object { -not [Cortmed.Browser.BrowserHost]::IsAllowedReparseTag([Convert]::ToUInt32($_, 16)) }) +
+            @(@('A000000C', 'A0000003', '8000001B') | Where-Object { [Cortmed.Browser.BrowserHost]::IsAllowedReparseTag([Convert]::ToUInt32($_, 16)) })
+        $tagWhy = if ($tagBad.Count -eq 0) { '' } else { 'yanlis: ' + ($tagBad -join ',') }
+    } catch { $tagWhy = $_.Exception.Message }
+    Check 'kopru: reparse etiketi (bulut kabul; symlink/junction/dedup ret)' ($tagWhy -eq '') $tagWhy
     Check 'kopru kayit defterine dokunmaz' ($hostSrcTxt -notmatch 'Microsoft\.Win32|Registry') ''
 
     # Sahte tarama komutu: -Kind'a gore sabit cikti verir, aldigi -Path'i -Log dosyasina yazar
@@ -644,13 +657,22 @@ switch ($Kind) {
         $o = [ordered]@{ level = 'YELLOW'; title = ('Şüpheli dosya: ' + ('ç' * 300)); reasons = @('ı1', 'ğ2', 'ş3', 'ö4', 'ü5', 'İ6', 7, ('x' * 300)) }
         [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress))
     }
+    'hang' {
+        # Kendi alt surecini baslatir (stdout borusunu miras alir) ve bekler: zaman asiminda ikisi de kapanmali
+        $psi = New-Object System.Diagnostics.ProcessStartInfo (Join-Path ([Environment]::SystemDirectory) 'PING.EXE'), '-n 120 127.0.0.1'
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $c = [System.Diagnostics.Process]::Start($psi)
+        [IO.File]::WriteAllText("$Log.pid", [string]$c.Id)
+        Start-Sleep -Seconds 120
+    }
 }
 [Console]::Out.Flush()
 '@
     [IO.File]::WriteAllText($stub, $stubTxt, (New-Object Text.UTF8Encoding($true)))
     $psExe = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $stubLog = Join-Path $hTmp 'stub-path.txt'
-    function StubArgs([string]$data, [string]$kind) { return @('--data', $data, '--scan-cmd', $psExe, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stub, '-Kind', $kind, '-Log', $stubLog) }
+    # Kopru secenekleri --scan-cmd'den once gelir (--scan-cmd sonrasi tarama komutunun argumanlaridir)
+    function StubArgs([string]$data, [string]$kind, [string[]]$extra = @()) { return @('--data', $data) + @($extra) + @('--scan-cmd', $psExe, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stub, '-Kind', $kind, '-Log', $stubLog) }
     function PathFrame([string]$p) { return (New-HostFrame (@{ path = $p } | ConvertTo-Json -Compress)) }
 
     if (Test-Path $hExe) {
@@ -670,6 +692,8 @@ switch ($Kind) {
             '\\127.0.0.1\c$\Windows\notepad.exe',
             'stub.ps1',
             ($stub + ':gizli'),
+            (Join-Path $hTmp 'stu?.ps1'),
+            (Join-Path $hTmp '*.ps1'),
             ''
         )
         foreach ($bp in $badPaths) {
@@ -718,6 +742,54 @@ switch ($Kind) {
         $trOk = $r.framed -and $r.reply -and $r.reply.level -eq 'YELLOW' -and ([string]$r.reply.title).StartsWith('Şüpheli dosya: ç') -and
             ([string]$r.reply.title).Length -eq 200 -and @($r.reply.reasons).Count -eq 5 -and (@($r.reply.reasons) -join ',') -ceq 'ı1,ğ2,ş3,ö4,ü5'
         Check 'kopru: Turkce karakterler korunur, baslik 200, en fazla 5 neden' $trOk (HostWhy $r)
+
+        # Kisa govde (baslik 100, yalnizca 10 bayt) ve bos stdin
+        $short = [byte[]]([BitConverter]::GetBytes([int]100) + [byte[]](1..10))
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd9') 'ok') $short
+        Check 'kopru: kisa govde -> ERROR' (Test-HostError $r $tReq) (HostWhy $r)
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd9') 'ok') ([byte[]]@())
+        Check 'kopru: bos stdin -> ERROR' (Test-HostError $r $tReq) (HostWhy $r)
+
+        # Kabuk karakterli ad tek ve harfi harfine arguman olarak gecer
+        $odd = Join-Path $hFileDir '-Mode Lib $(x) & '';''.exe'
+        [IO.File]::WriteAllBytes($odd, [byte[]](77, 90))
+        Remove-Item $stubLog -Force -ErrorAction SilentlyContinue
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd9') 'ok') (PathFrame $odd)
+        $logged = if (Test-Path $stubLog) { [IO.File]::ReadAllText($stubLog, [Text.Encoding]::UTF8) } else { '' }
+        Check 'kopru: ozel karakterli dosya adi tek harfi harfine arguman' ($r.reply -and $r.reply.level -eq 'OK' -and $logged -ceq $odd) ("log=$logged " + (HostWhy $r))
+
+        # Varsayilan lastseen klasoru: kopru exe'sinin yanindaki data\
+        $r = Invoke-BrowserHost $hExe @() (PathFrame (Join-Path $hTmp 'yok.exe'))
+        Check 'kopru: varsayilan lastseen <exe klasoru>\data' ((Test-HostError $r $tMiss) -and (Test-Path (Join-Path $hTmp 'data\browser-lastseen.txt'))) (HostWhy $r)
+
+        # Sembolik bag reddedilir (ayricalik yoksa atlanir)
+        $lnkTarget = Join-Path $hTmp 'hedef.exe'
+        [IO.File]::WriteAllBytes($lnkTarget, [byte[]](77, 90))
+        $lnk = Join-Path $hTmp 'baglanti.exe'
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $mk = & cmd.exe /c mklink "$lnk" "$lnkTarget" 2>&1 | ForEach-Object { "$_" } | Out-String } catch { $mk = "$_" } finally { $ErrorActionPreference = $prevEap }
+        if ((Test-Path -LiteralPath $lnk) -and ((Get-Item -LiteralPath $lnk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd11') 'ok') (PathFrame $lnk)
+            Check 'kopru: sembolik bag -> ERROR' (Test-HostError $r 'Bu dosya taranamıyor') (HostWhy $r)
+        } else { Write-Host "SKIP kopru: sembolik bag testi (mklink: $($mk.Trim()))" }
+
+        # Zaman asimi: tarama ve onun alt sureci (is nesnesi) kapanir, yanit gecikmez
+        $pidFile = "$stubLog.pid"
+        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+        $tsw = [Diagnostics.Stopwatch]::StartNew()
+        $r = Invoke-BrowserHost $hExe (StubArgs (Join-Path $hTmp 'd10') 'hang' @('--timeout-ms', '5000')) (PathFrame $vf) -TimeoutMs 40000
+        $tSec = $tsw.Elapsed.TotalSeconds
+        Check 'kopru: zaman asimi -> ERROR' ((Test-HostError $r 'Tarama zaman aşımına uğradı') -and $tSec -lt 25) ("sure=$tSec " + (HostWhy $r))
+        $childPid = 0
+        if (Test-Path $pidFile) { $childPid = [int]([IO.File]::ReadAllText($pidFile).Trim()) }
+        $alive = $true
+        for ($k = 0; $k -lt 20; $k++) {
+            $cp = if ($childPid) { Get-Process -Id $childPid -ErrorAction SilentlyContinue } else { $null }
+            if (-not $cp -or $cp.ProcessName -ne 'PING') { $alive = $false; break }
+            Start-Sleep -Milliseconds 250
+        }
+        Check 'kopru: zaman asiminda taramanin alt sureci de kapanir' ($childPid -gt 0 -and -not $alive) "pid=$childPid"
+        if ($alive -and $childPid) { Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue }
     }
 
     # CortmedSecurity.ps1 -Mode ScanFile -Json: gecici bir kopyada, bos bir CMDB ile, gecici bir .txt uzerinde
