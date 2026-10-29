@@ -124,21 +124,28 @@
     return card;
   }
 
-  function showLeaked(count) {
-    showCard('leak', [
-      'Bu şifre daha önce internete sızmış (', { b: Number(count).toLocaleString('tr-TR') }, ' kez görülmüş). Hemen değiştirin.'
-    ], [{ label: 'Tamam', act: 'close', primary: true }]);
+  // Giristen sonra baska siteye yonlenildiyse kart sifrenin girildigi siteyi adlandirir.
+  function fromParts(from) {
+    return from ? [{ b: from }, ' sitesinde girdiğiniz şifre için: '] : [];
   }
 
-  function showReuse(sites) {
+  function showLeaked(count, from) {
+    showCard('leak', fromParts(from).concat([
+      'Bu şifre daha önce internete sızmış (', { b: Number(count).toLocaleString('tr-TR') }, ' kez görülmüş). Hemen değiştirin.'
+    ]), [{ label: 'Tamam', act: 'close', primary: true }]);
+  }
+
+  function showReuse(sites, from) {
     const shown = sites.slice(0, 5).join(', ') + (sites.length > 5 ? ' ve ' + (sites.length - 5) + ' site daha' : '');
-    showCard('reuse', [
+    const buttons = [{ label: 'Tamam', act: 'close', primary: true }];
+    // "Bir daha gösterme" bu sayfanin sitesine yazilir; baska siteden gelen kartta gosterilmez.
+    if (!from) {
+      buttons.push({ label: 'Bu site için bir daha gösterme', act: 'mute', onClick: function () { send({ type: 'reuseMute', site: location.hostname }); } });
+    }
+    showCard('reuse', fromParts(from).concat([
       'Bu şifreyi başka ', { b: String(sites.length) }, ' sitede de kullanıyorsunuz: ' + shown +
       '. Bir site sızarsa hepsi tehlikeye girer. Bu site için farklı bir şifre seçin.'
-    ], [
-      { label: 'Tamam', act: 'close', primary: true },
-      { label: 'Bu site için bir daha gösterme', act: 'mute', onClick: function () { send({ type: 'reuseMute', site: location.hostname }); } }
-    ]);
+    ]), buttons);
   }
 
   function showResult(r) {
@@ -149,8 +156,9 @@
     }
     const leaked = Number(r.leaked) || 0;
     const reuse = Array.isArray(r.reuse) ? r.reuse.map(String) : [];
-    if (leaked > 0) showLeaked(leaked);
-    if (reuse.length) showReuse(reuse);
+    const from = typeof r.from === 'string' && r.from ? r.from.slice(0, 100) : null;
+    if (leaked > 0) showLeaked(leaked, from);
+    if (reuse.length) showReuse(reuse, from);
     if (leaked > 0 || reuse.length) send({ type: 'cardsShown' });
   }
 

@@ -403,11 +403,17 @@ async function routerTests(L, assertEq, sites, miss, PWSFX) {
   assertEq('route unknown type', L.routeMessage({ type: 'xyz' }, snd('https://a.com/'), d), null);
   assertEq('route ignored wrote nothing', [d.store.writes, d.session.writes, d.fetch.calls.length], [0, 0, 0]);
 
-  // pendingCards: ayni site alir, baska site alamaz
+  // pendingCards: ayni site alir; ayni sekmede baska siteye yonlenildiyse kart ilk siteyi adlandirir
   d = mk(PWSFX + ':77\r\n');
   r = await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://www.evil.com/'), d);
   assertEq('route leaked', r.leaked, 77);
-  assertEq('route pending cross-site rejected', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), null);
+  assertEq('route pending cross-site same tab names origin', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), { reuse: [], leaked: 77, from: 'evil.com' });
+  d = mk(PWSFX + ':77\r\n');
+  await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://www.evil.com/'), d);
+  assertEq('route pending cross-site other tab rejected', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/', { tab: { id: 9 } }), d), null);
+  now = T + 61000;
+  assertEq('route pending cross-site expires 60s', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), null);
+  now = T;
   d = mk(PWSFX + ':77\r\n');
   await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://www.evil.com/'), d);
   assertEq('route pending other tab', await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/', { tab: { id: 8 } }), d), null);
@@ -423,6 +429,70 @@ async function routerTests(L, assertEq, sites, miss, PWSFX) {
   await L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://evil.com/'), d);
   await L.routeMessage({ type: 'cardsShown' }, snd('https://evil.com/'), d);
   assertEq('route cardsShown clears', await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/'), d), null);
+
+  // Form gonderimiyle sayfa degisir: yeni sayfanin pendingCards'i suren kontrolu bekler (en fazla 6 sn)
+  function gatedFetch(body) {
+    let release, called;
+    const gate = new Promise(function (r) { release = r; });
+    const wasCalled = new Promise(function (r) { called = r; });
+    const f = async function (url) { f.calls.push({ url: url }); called(); await gate; return { ok: true, text: async function () { return body; } }; };
+    f.calls = []; f.release = release; f.wasCalled = wasCalled;
+    return f;
+  }
+  const never = function () { return new Promise(function () {}); };
+  const instant = function () { return Promise.resolve(); };
+  const sleeps = [];
+  d = mk(); d.inflight = new Map(); d.fetch = gatedFetch(PWSFX + ':77\r\n');
+  d.sleep = function (ms) { sleeps.push(ms); return never(); };
+  let sub = L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://bank.com/login'), d);
+  assertEq('inflight set synchronously', d.inflight.has(7), true);
+  let pend = L.routeMessage({ type: 'pendingCards' }, snd('https://www.bank.com/home'), d);
+  await d.fetch.wasCalled;
+  d.fetch.release();
+  r = await pend;
+  assertEq('pending waits for in-flight check', r, { reuse: [], leaked: 77 });
+  assertEq('pending wait capped at 6s', sleeps, [6000]);
+  await sub;
+  assertEq('inflight cleared after check', d.inflight.size, 0);
+  assertEq('pending without in-flight does not wait', [await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), sleeps.length], [null, 1]);
+
+  // Ayni-sifre sonucu HIBP donmeden bekleyen karta yazilir; sizinti sonucu gelince eklenir
+  const esalt = '00112233445566778899aabbccddeeff';
+  const efp = await L.fingerprint('Ortak-Erken-1', esalt);
+  const eidx = {}; eidx[efp] = ['a.com'];
+  d = mk(); d.inflight = new Map(); d.fetch = gatedFetch(PWSFX + ':0\r\n' + 'X'.repeat(35) + ':1\r\n');
+  d.store = fakeStore({ salt: esalt, pwIndex: eidx });
+  sub = L.routeMessage({ type: 'pwSubmit', password: 'Ortak-Erken-1' }, snd('https://bank.com/'), d);
+  await d.fetch.wasCalled;
+  assertEq('reuse stored before HIBP returns', d.session.data.pending && d.session.data.pending[7] && d.session.data.pending[7].result, { reuse: ['a.com'], leaked: 0 });
+  d.sleep = instant; // 6 sn doldu
+  r = await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d);
+  assertEq('pending after timeout gets reuse only', r, { reuse: ['a.com'], leaked: 0 });
+  d.fetch.release();
+  r = await sub;
+  assertEq('pw reply complete', r.reuse, ['a.com']);
+  assertEq('no leak: nothing more pending', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), null);
+
+  // Ayni senaryo, sifre sizmis: kart alindiktan sonra gelen sizinti ayrica bekler
+  const lfp = await L.fingerprint('password', esalt);
+  const lidx = {}; lidx[lfp] = ['a.com'];
+  d = mk(); d.inflight = new Map(); d.fetch = gatedFetch(PWSFX + ':77\r\n'); d.sleep = instant;
+  d.store = fakeStore({ salt: esalt, pwIndex: lidx });
+  sub = L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://bank.com/'), d);
+  await d.fetch.wasCalled;
+  r = await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d);
+  assertEq('early pending reuse', r, { reuse: ['a.com'], leaked: 0 });
+  d.fetch.release();
+  await sub;
+  assertEq('late leak pending alone', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), { reuse: [], leaked: 77 });
+  // Kart alinmadan sonuc geldiyse tek kayit, ikisi birlikte
+  d = mk(); d.inflight = new Map(); d.fetch = gatedFetch(PWSFX + ':77\r\n'); d.sleep = never;
+  d.store = fakeStore({ salt: esalt, pwIndex: lidx });
+  sub = L.routeMessage({ type: 'pwSubmit', password: 'password' }, snd('https://bank.com/'), d);
+  await d.fetch.wasCalled;
+  d.fetch.release();
+  await sub;
+  assertEq('complete result replaces early', await L.routeMessage({ type: 'pendingCards' }, snd('https://bank.com/'), d), { reuse: ['a.com'], leaked: 77 });
 
   // Rakam şifre yönlendiricide de hız sınırına ve bekleyen karta sayılmaz
   d = mk();

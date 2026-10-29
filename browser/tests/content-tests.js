@@ -39,6 +39,17 @@
       const cs = getComputedStyle(sh.host);
       assertEq('host fixed max z', [cs.position, cs.zIndex], ['fixed', '2147483647']);
     }
+    // Yonlendirme sonrasi bekleyen kartlar: ilk site adiyla, "bir daha gösterme" yok (bu sayfanin sitesi degil)
+    assertEq('pendingCards sent once', window.__sent.filter(function (m) { return m.type === 'pendingCards'; }).length, 1);
+    const pl = cards('leak')[0], pr = cards('reuse')[0];
+    assertEq('redirect leak names origin', !!pl && pl.textContent.indexOf('garanti.com.tr sitesinde girdiğiniz şifre için: Bu şifre daha önce internete sızmış (42 kez görülmüş). Hemen değiştirin.') >= 0, true);
+    assertEq('redirect reuse names origin', !!pr && pr.textContent.indexOf('garanti.com.tr sitesinde girdiğiniz şifre için: Bu şifreyi başka 1 sitede de kullanıyorsunuz: a.com.') >= 0, true);
+    assertEq('redirect origin bold', !!pr && pr.querySelector('b') && pr.querySelector('b').textContent, 'garanti.com.tr');
+    assertEq('redirect reuse no mute button', pr ? Array.prototype.map.call(pr.querySelectorAll('button'), function (b) { return b.textContent; }) : null, ['Tamam']);
+    assertEq('redirect cardsShown sent', window.__sent.filter(function (m) { return m.type === 'cardsShown'; }).length, 1);
+    if (pl) pl.querySelector('[data-act="close"]').click();
+    if (pr) pr.querySelector('[data-act="close"]').click();
+
     const mfa = cards('mfa');
     assertEq('mfa card shown', mfa.length, 1);
     const mfaText = mfa[0] ? mfa[0].textContent : '';

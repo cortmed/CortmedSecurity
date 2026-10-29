@@ -39,7 +39,9 @@ importScripts('lib/core.js');
     now: function () { return Date.now(); },
     serial: serial,
     loadSites: loadSites,
-    openTab: function (url) { chrome.tabs.create({ url: url }); }
+    openTab: function (url) { chrome.tabs.create({ url: url }); },
+    // Sekme basina suren sifre kontrolu (yalnizca bellekte; yeni sayfanin pendingCards'i bunu bekler)
+    inflight: new Map()
   };
 
   chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {

@@ -182,20 +182,30 @@
     if (!(await run(function () { return fpAllow(deps, fp); }))) return empty;
 
     const cached = ((await deps.store.get(['hibpCache'])).hibpCache || {})[fp];
+    const known = freshEntry(cached, deps.now()) ? cached.n : null;
+
+    // Ayni-sifre sonucu once yazilir ve bildirilir (deps.onEarly); HIBP sonra sorulur.
+    const early = await run(async function () {
+      const st = await deps.store.get(['pwIndex', 'noReuseWarn']);
+      const rec = recordUse(st.pwIndex || {}, fp, site);
+      await deps.store.set({ pwIndex: rec.index });
+      const muted = (st.noReuseWarn || {})[site];
+      return { reuse: muted ? [] : rec.otherSites, leaked: known || 0 };
+    });
+    if (deps.onEarly) await deps.onEarly(early);
+
     let fresh = null;
-    if (!freshEntry(cached, deps.now())) fresh = await hibpCount(prefix, suffix, deps);
+    if (known === null) fresh = await hibpCount(prefix, suffix, deps);
 
     return run(async function () {
       const now = deps.now();
-      const st = await deps.store.get(['pwIndex', 'hibpCache', 'noReuseWarn']);
-      const rec = recordUse(st.pwIndex || {}, fp, site);
+      const st = await deps.store.get(['hibpCache']);
       const all = st.hibpCache || {};
       if (fresh !== null) all[fp] = { n: fresh, t: now };
       const cache = pruneCache(all, now);
       const leaked = cache[fp] ? cache[fp].n : 0;
-      await deps.store.set({ pwIndex: rec.index, hibpCache: cache });
-      const muted = (st.noReuseWarn || {})[site];
-      return { reuse: muted ? [] : rec.otherSites, leaked: leaked };
+      await deps.store.set({ hibpCache: cache });
+      return { reuse: early.reuse, leaked: leaked };
     });
   }
 
@@ -327,7 +337,12 @@
     return ok;
   }
 
-  // deps: {selfId, store, session, fetch, now, serial, loadSites, openTab}
+  const PENDING_WAIT_MS = 6000;
+  let jobSeq = 0;
+  function noop() {}
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // deps: {selfId, store, session, fetch, now, serial, loadSites, openTab, inflight (Map sekme -> suren kontrol), sleep}
   // Donus: null (islenmedi, cevap yok) ya da cevabi veren Promise.
   function routeMessage(msg, sender, deps) {
     if (!sender || sender.id !== deps.selfId || !msg || typeof msg.type !== 'string') return null;
@@ -348,31 +363,65 @@
       });
     }
 
+    function hasCards(r) { return !!r && (r.leaked > 0 || r.reuse.length > 0); }
+
     switch (msg.type) {
       case 'pwSubmit': {
         let password = typeof msg.password === 'string' ? msg.password : '';
         msg.password = null;
         if (!password || skipSecret(password)) { password = null; return Promise.resolve(empty); }
-        return (async function () {
+        const id = ++jobSeq;
+        let early = null;
+        const work = (async function () {
           const allowed = await run(function () { return rateAllow(deps, site); });
           if (!allowed) { password = null; return empty; }
-          const job = handlePwSubmit({ site: host, password: password }, deps);
+          // Sayfa gonderimle kapanirsa yeni sayfa sonucu bekleyen karttan alir: ayni-sifre sonucu hemen yazilir.
+          const job = handlePwSubmit({ site: host, password: password }, Object.assign({}, deps, {
+            onEarly: function (e) {
+              early = e;
+              if (!hasCards(e)) return undefined;
+              return pendingUpdate(function (p) { p[tabId] = { id: id, site: site, result: e, t: deps.now() }; });
+            }
+          }));
           password = null;
           const r = await job;
-          if (r.leaked > 0 || r.reuse.length) {
-            await pendingUpdate(function (p) { p[tabId] = { site: site, result: r, t: deps.now() }; });
-          }
+          await pendingUpdate(function (p) {
+            const cur = p[tabId];
+            if (cur && cur.id === id) {
+              if (hasCards(r)) { cur.result = r; cur.t = deps.now(); } else delete p[tabId];
+            } else if (!cur) {
+              // Erken kart alindiysa yalnizca sonradan gelen sizinti eklenir.
+              if (!hasCards(early)) { if (hasCards(r)) p[tabId] = { id: id, site: site, result: r, t: deps.now() }; }
+              else if (r.leaked > 0 && !(early.leaked > 0)) p[tabId] = { id: id, site: site, result: { reuse: [], leaked: r.leaked }, t: deps.now() };
+            }
+          });
           return r;
         })();
+        const inflight = deps.inflight;
+        if (inflight) {
+          inflight.set(tabId, work);
+          const done = function () { if (inflight.get(tabId) === work) inflight.delete(tabId); };
+          work.then(done, done);
+        }
+        return work;
       }
       case 'cardsShown':
         return pendingUpdate(function (p) { delete p[tabId]; }).then(function () { return undefined; });
-      case 'pendingCards':
-        return pendingUpdate(function (p) {
-          const e = p[tabId];
-          delete p[tabId];
-          return e && e.site === site && deps.now() - e.t < PENDING_MS ? e.result : null;
+      case 'pendingCards': {
+        // Suren kontrol varsa en fazla 6 sn beklenir.
+        const busy = deps.inflight && deps.inflight.get(tabId);
+        const ready = busy ? Promise.race([busy.then(noop, noop), (deps.sleep || sleep)(PENDING_WAIT_MS)]) : Promise.resolve();
+        return ready.then(function () {
+          return pendingUpdate(function (p) {
+            const e = p[tabId];
+            delete p[tabId];
+            if (!e || !(deps.now() - e.t < PENDING_MS)) return null;
+            if (e.site === site) return e.result;
+            // Giristen sonra ayni sekmede baska siteye yonlenildi: kart ilk siteyi adlandirir.
+            return Object.assign({}, e.result, { from: e.site });
+          });
         });
+      }
       case 'reuseMute':
         return run(function () { return handleReuseMute({ site: host }, deps); });
       case 'mfaCheck':

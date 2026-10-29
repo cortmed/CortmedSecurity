@@ -6,7 +6,9 @@
   window.__sent = [];
   window.__replies = {
     mfaCheck: { show: true, id: 'discord', name: 'Discord', url: 'https://support.discord.com/x' },
-    pwSubmit: { reuse: ['a.com', 'b.com'], leaked: 1234567 }
+    pwSubmit: { reuse: ['a.com', 'b.com'], leaked: 1234567 },
+    // Onceki sayfa baska bir sitedeydi (giris sonrasi yonlendirme): kartlar o siteyi adlandirir
+    pendingCards: { reuse: ['a.com'], leaked: 42, from: 'garanti.com.tr' }
   };
   const stub = {
     runtime: {
