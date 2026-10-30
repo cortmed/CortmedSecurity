@@ -476,7 +476,49 @@ try {
     TCheck 'Invoke: uac exe baslatilir' ($r -and $launched.Count -eq 1 -and $launched[0] -eq ((Join-Path $sysDir 'UserAccountControlSettings.exe') + '|')) ($launched -join ',')
     $launched.Clear()
     $r = Invoke-FindingAction $sa $fake $note
-    TCheck 'Invoke: select explorer /select tek arguman' ($r -and $launched.Count -eq 1 -and $launched[0] -eq ((Join-Path $env:windir 'explorer.exe') + '|/select,"' + $victim + '"')) ($launched -join ',')
+    TCheck 'Invoke: select explorer /select tek arguman' ($r -and $launched.Count -ge 1 -and $launched[0] -eq ((Join-Path $env:windir 'explorer.exe') + '|/select,"' + $victim + '"')) ($launched -join ',')
+    $psExe = Join-Path $sysDir 'WindowsPowerShell\v1.0\powershell.exe'
+    $wantOverlay = $psExe + '|-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $SelfPath + '" -Mode Overlay -Path "' + $victim + '"'
+    TCheck 'Invoke: select ardindan uyari katmani sureci baslatilir' ($launched.Count -eq 2 -and $launched[1] -eq $wantOverlay) ($launched -join ' ;; ')
+    $launched.Clear(); $msgs.Clear()
+    $okExplorerBad = Invoke-FindingAction $sa { param($file, $argText) if ($file -like '*powershell.exe') { throw 'boom' } else { [void]$launched.Add($file) } } $note
+    TCheck 'Invoke: katman baslatilamazsa eylem yine basarili, mesaj yok' ($okExplorerBad -and $launched.Count -eq 1 -and $msgs.Count -eq 0) ''
+    $launched.Clear(); $msgs.Clear()
+    $r = Invoke-FindingAction @{ label = 'x'; kind = 'select'; target = $quoted } $fake $note
+    TCheck 'Invoke: tirnakli yolda katman da baslamaz' (-not $r -and $launched.Count -eq 0) ''
+    $launched.Clear()
+    $r = Invoke-FindingAction (Get-FindingAction (New-Finding 'admin' 'YELLOW' 't' 'd')) $fake $note
+    TCheck 'Invoke: uri eyleminde katman baslamaz' ($r -and $launched.Count -eq 1) ($launched -join ',')
+    $launched.Clear()
+
+    # Tehlikeli dosya uyari katmani: ValidateSet, saf yerlesim, dikdortgen suzgeci
+    $paramAttr = (Get-Command (Join-Path $work 'CortmedSecurity.ps1')).Parameters['Mode'].Attributes | Where-Object { $_ -is [Management.Automation.ValidateSetAttribute] }
+    TCheck 'katman: Overlay modu ValidateSet icinde' (@($paramAttr.ValidValues) -contains 'Overlay') ($paramAttr.ValidValues -join ',')
+    $scr = New-Object Drawing.Rectangle 0, 0, 1920, 1040
+    $csz = New-Object Drawing.Size 420, 64
+    function InScr($l) { $l.Callout.Left -ge $scr.Left -and $l.Callout.Top -ge $scr.Top -and $l.Callout.Right -le $scr.Right -and $l.Callout.Bottom -le $scr.Bottom }
+    $l1 = Get-OverlayLayout (New-Object Drawing.Rectangle 100, 200, 300, 40) $scr $csz
+    TCheck 'katman: yer varsa balon sagda' ($l1.Side -eq 'right' -and $l1.Callout.Left -gt 400 -and (InScr $l1)) ($l1.Side)
+    TCheck 'katman: ok ucu ogenin kenarinda, tabani balonda' ($l1.Arrow.Count -eq 3 -and $l1.Arrow[0].X -ge 400 -and $l1.Arrow[0].X -le 404 -and $l1.Arrow[1].X -eq $l1.Callout.Left -and $l1.Arrow[2].X -eq $l1.Callout.Left) ($l1.Arrow -join ' ')
+    $l2 = Get-OverlayLayout (New-Object Drawing.Rectangle 1500, 200, 300, 40) $scr $csz
+    TCheck 'katman: sagda yer yoksa balon solda' ($l2.Side -eq 'left' -and $l2.Callout.Right -lt 1500 -and (InScr $l2)) ($l2.Side)
+    $narrow = New-Object Drawing.Rectangle 0, 0, 500, 600
+    $l3 = Get-OverlayLayout (New-Object Drawing.Rectangle 100, 200, 300, 40) $narrow $csz
+    TCheck 'katman: yanlarda yer yoksa balon altta' ($l3.Side -eq 'below' -and $l3.Callout.Top -gt 240 -and $l3.Callout.Right -le 500) ($l3.Side)
+    $l4 = Get-OverlayLayout (New-Object Drawing.Rectangle 100, 540, 300, 40) $narrow $csz
+    TCheck 'katman: altta da yer yoksa balon ustte' ($l4.Side -eq 'above' -and $l4.Callout.Bottom -lt 540 -and $l4.Callout.Top -ge 0) ($l4.Side)
+    $tiny = New-Object Drawing.Rectangle 0, 0, 300, 100
+    $l5 = Get-OverlayLayout (New-Object Drawing.Rectangle 20, 30, 260, 40) $tiny $csz
+    TCheck 'katman: hicbir yere sigmasa da ekran icinde kalir' ($l5.Callout.Left -ge 0 -and $l5.Callout.Top -ge 0) ($l5.Callout | Out-String)
+    $l6 = Get-OverlayLayout (New-Object Drawing.Rectangle 1000, 2, 300, 40) $scr $csz
+    TCheck 'katman: ekranin ust kenarinda balon ekran icinde' ((InScr $l6) -and $l6.Callout.Top -ge 0) ($l6.Callout | Out-String)
+    TCheck 'katman: Bounds ogeyi ve balonu kapsar' ($l1.Bounds.Contains($l1.Callout) -and $l1.Bounds.Contains((New-Object Drawing.Rectangle 100, 200, 300, 40))) ($l1.Bounds | Out-String)
+    $pb = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    TCheck 'katman: gecerli dikdortgen kabul' ($null -ne (Get-OverlayRectOrNull ($pb.X + 10) ($pb.Y + 10) 300 40)) ''
+    TCheck 'katman: bos dikdortgen reddedilir' ($null -eq (Get-OverlayRectOrNull 10 10 0 0)) ''
+    TCheck 'katman: ekran disi dikdortgen reddedilir' ($null -eq (Get-OverlayRectOrNull -32000 -32000 300 40)) ''
+    TCheck 'katman: sonsuz (Rect.Empty) reddedilir' ($null -eq (Get-OverlayRectOrNull ([double]::PositiveInfinity) ([double]::PositiveInfinity) ([double]::NegativeInfinity) ([double]::NegativeInfinity))) ''
+    TCheck 'katman: yol tirnak icerirse sessizce cikar' ($null -eq (Show-DangerOverlay 'C:\a"b.exe')) ''
     $launched.Clear(); $msgs.Clear()
     $r = Invoke-FindingAction @{ label = 'x'; kind = 'select'; target = $quoted } $fake $note
     TCheck 'Invoke: select tirnakli yol reddedilir' (-not $r -and $launched.Count -eq 0) ''

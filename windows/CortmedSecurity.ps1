@@ -9,10 +9,11 @@
     Daily     Tam kontrol: guvenlik ayarlari, baslangic programlari, Discord, Indirilenler
     Update    Veritabanini guncelle
     ScanFile  Tek dosya tara (-Path); -Json ile tek satir {level,title,reasons} (tarayici koprusu icin)
+    Overlay  Explorer'da -Path dosyasinin ustune gecici kirmizi uyari katmani cizer (sessiz, ayri surec)
     Lib      Hicbir sey calistirma (fonksiyonlari test icin yukle)
 #>
 param(
-    [ValidateSet('Panel', 'Watch', 'Daily', 'Update', 'ScanFile', 'InstallClamAV', 'Lib')]
+    [ValidateSet('Panel', 'Watch', 'Daily', 'Update', 'ScanFile', 'InstallClamAV', 'Overlay', 'Lib')]
     [string]$Mode = 'Panel',
     [string]$Path,
     # -Json yalnizca ScanFile icin. Degisken adi $ScanJson: betigi nokta ile yukleyenlerin (Lib) $json'u [switch] olmasin.
@@ -22,6 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SelfPath = $MyInvocation.MyCommand.Path
 $DataDir = Join-Path $Root 'data'
 $QuarantineDir = Join-Path $Root 'Karantina'
 $ConfigPath = Join-Path $Root 'config.json'
@@ -1804,6 +1806,13 @@ function Invoke-FindingAction($action, [scriptblock]$Launcher = $null, [scriptbl
             'select' {
                 if (-not $target -or $target.Contains('"') -or -not (Test-Path -LiteralPath $target -PathType Leaf)) { throw 'izinsiz dosya yolu' }
                 & $Launcher (Join-Path $env:windir 'explorer.exe') ('/select,"{0}"' -f $target)
+                # Kirmizi uyari katmani ayri, gizli surecte; basarisiz olursa eylem yine basarili sayilir
+                try {
+                    if ($SelfPath -and -not $SelfPath.Contains('"')) {
+                        $ps = Join-Path $sys 'WindowsPowerShell\v1.0\powershell.exe'
+                        & $Launcher $ps ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Mode Overlay -Path "{1}"' -f $SelfPath, $target)
+                    }
+                } catch { Write-Log "Uyari katmani baslatilamadi: $($_.Exception.Message)" }
             }
             default { throw "bilinmeyen eylem: $kind" }
         }
@@ -1812,6 +1821,278 @@ function Invoke-FindingAction($action, [scriptblock]$Launcher = $null, [scriptbl
         Write-Log "Eylem acilamadi: $($_.Exception.Message)"
         try { & $Notify 'Açılamadı. Ayrıntılardaki adımları elle izleyebilirsiniz.' } catch { }
         return $false
+    }
+}
+
+# ------------------------------------------------------------------ tehlikeli dosya uyari katmani (-Mode Overlay)
+
+$OverlayRed = [Drawing.Color]::FromArgb(239, 83, 80)
+$OverlayDark = [Drawing.Color]::FromArgb(183, 28, 28)
+$OverlayLine1 = '⚠ Cortmed bu dosyanın güvenli olmadığını düşünüyor'
+$OverlayLine2 = 'Açmayın. Ayrıntılar Cortmed panelinde.'
+
+# Saf yerlesim: uyari balonu ogenin saginda (yer yoksa solunda, altinda, ustunde) ve her zaman ekranin icinde.
+# Donus: Side, Callout (Rectangle), Arrow (Point[3]: uc, taban1, taban2), Bounds (tum katmani kapsayan Rectangle)
+function Get-OverlayLayout($itemRect, $screenRect, $calloutSize) {
+    $gap = 30; $margin = 6
+    $i = [Drawing.Rectangle]$itemRect; $s = [Drawing.Rectangle]$screenRect; $c = [Drawing.Size]$calloutSize
+    $w = $c.Width; $h = $c.Height
+    $minX = $s.Left + $margin; $maxX = $s.Right - $margin; $minY = $s.Top + $margin; $maxY = $s.Bottom - $margin
+    $clampX = { param($v) [Math]::Max($minX, [Math]::Min($v, [Math]::Max($minX, $maxX - $w))) }
+    $clampY = { param($v) [Math]::Max($minY, [Math]::Min($v, [Math]::Max($minY, $maxY - $h))) }
+    $cx = $i.Left + [int]($i.Width / 2); $cy = $i.Top + [int]($i.Height / 2)
+    if ($i.Right + $gap + $w -le $maxX) { $side = 'right'; $x = $i.Right + $gap; $y = & $clampY ($cy - [int]($h / 2)) }
+    elseif ($i.Left - $gap - $w -ge $minX) { $side = 'left'; $x = $i.Left - $gap - $w; $y = & $clampY ($cy - [int]($h / 2)) }
+    elseif ($i.Bottom + $gap + $h -le $maxY) { $side = 'below'; $y = $i.Bottom + $gap; $x = & $clampX $i.Left }
+    elseif ($i.Top - $gap - $h -ge $minY) { $side = 'above'; $y = $i.Top - $gap - $h; $x = & $clampX $i.Left }
+    else { $side = 'below'; $x = & $clampX $i.Left; $y = & $clampY ($i.Bottom + $gap) }
+    $callout = New-Object Drawing.Rectangle $x, $y, $w, $h
+    $half = 11
+    $lim = { param($v, $lo, $hi) [Math]::Max($lo, [Math]::Min($v, [Math]::Max($lo, $hi))) }
+    switch ($side) {
+        'right' { $ty = & $lim $cy ($callout.Top + 4 + $half) ($callout.Bottom - 4 - $half); $arrow = @((New-Object Drawing.Point ($i.Right + 2), $cy), (New-Object Drawing.Point $callout.Left, ($ty - $half)), (New-Object Drawing.Point $callout.Left, ($ty + $half))) }
+        'left'  { $ty = & $lim $cy ($callout.Top + 4 + $half) ($callout.Bottom - 4 - $half); $arrow = @((New-Object Drawing.Point ($i.Left - 2), $cy), (New-Object Drawing.Point $callout.Right, ($ty - $half)), (New-Object Drawing.Point $callout.Right, ($ty + $half))) }
+        'below' { $tx = & $lim $cx ($callout.Left + 8 + $half) ($callout.Right - 8 - $half); $arrow = @((New-Object Drawing.Point $cx, ($i.Bottom + 2)), (New-Object Drawing.Point ($tx - $half), $callout.Top), (New-Object Drawing.Point ($tx + $half), $callout.Top)) }
+        default { $tx = & $lim $cx ($callout.Left + 8 + $half) ($callout.Right - 8 - $half); $arrow = @((New-Object Drawing.Point $cx, ($i.Top - 2)), (New-Object Drawing.Point ($tx - $half), $callout.Bottom), (New-Object Drawing.Point ($tx + $half), $callout.Bottom)) }
+    }
+    $inflated = New-Object Drawing.Rectangle ($i.X - 8), ($i.Y - 8), ($i.Width + 16), ($i.Height + 16)
+    $bounds = [Drawing.Rectangle]::Union($inflated, $callout)
+    return [pscustomobject]@{ Side = $side; Callout = $callout; Arrow = [Drawing.Point[]]$arrow; Bounds = $bounds }
+}
+
+# UI Automation dikdortgenini (fiziksel piksel) kullanilabilir Rectangle'a cevirir; bos / sonsuz / ekran disi ise $null.
+function Get-OverlayRectOrNull([double]$x, [double]$y, [double]$w, [double]$h) {
+    foreach ($v in $x, $y, $w, $h) { if ([double]::IsNaN($v) -or [double]::IsInfinity($v)) { return $null } }
+    if ($w -lt 4 -or $h -lt 4 -or $w -gt 20000 -or $h -gt 20000) { return $null }
+    $r = New-Object Drawing.Rectangle ([int]$x), ([int]$y), ([int]$w), ([int]$h)
+    foreach ($scr in [Windows.Forms.Screen]::AllScreens) { if ($scr.Bounds.IntersectsWith($r)) { return $r } }
+    return $null
+}
+
+function New-OverlayFont([double]$pt) { New-Object Drawing.Font 'Segoe UI', ([single]$pt), ([Drawing.FontStyle]::Bold), ([Drawing.GraphicsUnit]::Point) }
+
+# Balonun boyu: iki satirin olcusu + dolgu
+function Get-OverlayCalloutSize([Drawing.Graphics]$g) {
+    $f1 = New-OverlayFont 11.5; $f2 = New-OverlayFont 10
+    try {
+        $fmt = [Drawing.StringFormat]::GenericTypographic
+        $a = $g.MeasureString($OverlayLine1, $f1, 2000, $fmt); $b = $g.MeasureString($OverlayLine2, $f2, 2000, $fmt)
+        $w = [int][Math]::Ceiling([Math]::Max($a.Width, $b.Width)) + 40
+        $h = [int][Math]::Ceiling($a.Height + $b.Height) + 4 + 24
+        return (New-Object Drawing.Size $w, $h)
+    } finally { $f1.Dispose(); $f2.Dispose() }
+}
+
+function New-OverlayRoundPath([Drawing.RectangleF]$r, [single]$rad) {
+    $p = New-Object Drawing.Drawing2D.GraphicsPath
+    $d = [Math]::Min($rad * 2, [Math]::Min($r.Width, $r.Height))
+    $p.AddArc($r.X, $r.Y, $d, $d, 180, 90); $p.AddArc($r.Right - $d, $r.Y, $d, $d, 270, 90)
+    $p.AddArc($r.Right - $d, $r.Bottom - $d, $d, $d, 0, 90); $p.AddArc($r.X, $r.Bottom - $d, $d, $d, 90, 90)
+    $p.CloseFigure()
+    return $p
+}
+
+# Cizim rutini: herhangi bir Graphics'e cizer (form ya da bitmap). $origin: Graphics'in sol ust kosesine denk gelen ekran noktasi.
+# Yari saydam dolgu burada degil (forma ayri bir katman olarak konur); burada kenarlik, ok ve balon var.
+function Invoke-OverlayPaint([Drawing.Graphics]$g, $layout, [double]$pulse, [Drawing.Point]$origin, $itemRect) {
+    $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.TextRenderingHint = [Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+    $g.TranslateTransform(-$origin.X, -$origin.Y)
+    $i = [Drawing.Rectangle]$itemRect
+    $pen = $null; $fillB = $null; $darkB = $null; $outline = $null; $path = $null; $path2 = $null; $f1 = $null; $f2 = $null; $white = $null
+    try {
+        $bw = 3 + 2 * $pulse
+        $pen = New-Object Drawing.Pen $OverlayRed, ([single]$bw)
+        $pen.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
+        $path = New-OverlayRoundPath (New-Object Drawing.RectangleF ($i.X - 2), ($i.Y - 2), ($i.Width + 4), ($i.Height + 4)) 7
+        $g.DrawPath($pen, $path)
+        $fillB = New-Object Drawing.SolidBrush $OverlayRed
+        $g.FillPolygon($fillB, $layout.Arrow)
+        $c = $layout.Callout
+        $path2 = New-OverlayRoundPath (New-Object Drawing.RectangleF $c.X, $c.Y, $c.Width, $c.Height) 14
+        $darkB = New-Object Drawing.SolidBrush $OverlayDark
+        $g.FillPath($darkB, $path2)
+        $outline = New-Object Drawing.Pen $OverlayRed, 2
+        $g.DrawPath($outline, $path2)
+        $f1 = New-OverlayFont 11.5; $f2 = New-OverlayFont 10
+        $white = New-Object Drawing.SolidBrush ([Drawing.Color]::White)
+        $fmt = [Drawing.StringFormat]::GenericTypographic
+        $m1 = $g.MeasureString($OverlayLine1, $f1, 2000, $fmt)
+        $g.DrawString($OverlayLine1, $f1, $white, [single]($c.X + 20), [single]($c.Y + 12), $fmt)
+        $g.DrawString($OverlayLine2, $f2, $white, [single]($c.X + 20), [single]($c.Y + 12 + $m1.Height + 4), $fmt)
+    } finally {
+        foreach ($d in $pen, $fillB, $darkB, $outline, $path, $path2, $f1, $f2, $white) { if ($d) { $d.Dispose() } }
+        $g.ResetTransform()
+    }
+}
+
+# Gorsel kontrol: katmani sahte 300x40 ogenin ustune, ekran disi bitmap'e cizer
+function Save-OverlayPreview([string]$pngPath) {
+    $bmp = New-Object Drawing.Bitmap 920, 220
+    $g = [Drawing.Graphics]::FromImage($bmp)
+    try {
+        $g.Clear([Drawing.Color]::FromArgb(128, 128, 128))
+        $item = New-Object Drawing.Rectangle 80, 90, 300, 40
+        $row = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(235, 240, 248)); $ink = New-Object Drawing.SolidBrush ([Drawing.Color]::Black)
+        $rf = New-Object Drawing.Font 'Segoe UI', 10
+        $g.FillRectangle($row, $item); $g.DrawString('sahte-fatura.pdf.exe', $rf, $ink, 92, 99)
+        $row.Dispose(); $ink.Dispose(); $rf.Dispose()
+        $fill = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(77, $OverlayRed))
+        $g.FillRectangle($fill, $item); $fill.Dispose()
+        $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $size = Get-OverlayCalloutSize $g
+        $layout = Get-OverlayLayout $item (New-Object Drawing.Rectangle 0, 0, 920, 220) $size
+        Invoke-OverlayPaint $g $layout 0.5 (New-Object Drawing.Point 0, 0) $item
+        New-Item -ItemType Directory -Force (Split-Path -Parent $pngPath) | Out-Null
+        $bmp.Save($pngPath, [Drawing.Imaging.ImageFormat]::Png)
+    } finally { $g.Dispose(); $bmp.Dispose() }
+}
+
+function Initialize-OverlayTypes {
+    if ('CortmedOverlayForm' -as [type]) { return }
+    Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+// Tiklanamaz, odak almaz, gorev cubugunda gorunmez, en ustte duran katmanli pencere
+public class CortmedOverlayForm : Form {
+    public CortmedOverlayForm() {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        AutoScaleMode = AutoScaleMode.None;
+        TopMost = true;
+        DoubleBuffered = true;
+    }
+    protected override CreateParams CreateParams {
+        get {
+            CreateParams cp = base.CreateParams;
+            // WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST
+            cp.ExStyle |= 0x00080000 | 0x00000020 | 0x00000080 | 0x08000000 | 0x00000008;
+            return cp;
+        }
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+}
+
+public static class CortmedOverlayNative {
+    [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    public static void EnableDpi() {
+        try { SetProcessDpiAwarenessContext(new IntPtr(-4)); return; } catch (Exception) { }
+        try { SetProcessDPIAware(); } catch (Exception) { }
+    }
+}
+'@
+}
+
+# Explorer penceresinde dosyanin satirini UI Automation ile bulur (en ustteki Explorer penceresi once). Bulunamazsa $null.
+function Find-OverlayItem([string]$file, [int]$timeoutMs = 6000) {
+    $leaf = [IO.Path]::GetFileName($file)
+    $names = @($leaf)
+    $bare = [IO.Path]::GetFileNameWithoutExtension($file)
+    if ($bare -and $bare -ne $leaf) { $names += $bare }   # "bilinen uzantilari gizle" acikken satir adi uzantisizdir
+    $A = [Windows.Automation.AutomationElement]
+    $ct = [Windows.Automation.ControlType]
+    $winCond = New-Object Windows.Automation.PropertyCondition $A::ClassNameProperty, 'CabinetWClass'
+    $typeCond = [Windows.Automation.OrCondition]::new((New-Object Windows.Automation.PropertyCondition $A::ControlTypeProperty, $ct::ListItem), (New-Object Windows.Automation.PropertyCondition $A::ControlTypeProperty, $ct::DataItem))
+    $nameConds = @($names | ForEach-Object { New-Object Windows.Automation.PropertyCondition $A::NameProperty, $_ })
+    $nameCond = if ($nameConds.Count -gt 1) { [Windows.Automation.OrCondition]::new($nameConds[0], $nameConds[1]) } else { $nameConds[0] }
+    $cond = [Windows.Automation.AndCondition]::new($typeCond, $nameCond)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        try {
+            $wins = $A::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $winCond)
+            foreach ($w in $wins) {   # UIA alt pencereleri ustten alta (Z sirasi) verir
+                try {
+                    $it = $w.FindFirst([Windows.Automation.TreeScope]::Descendants, $cond)
+                    if ($it) {
+                        $b = $it.Current.BoundingRectangle
+                        $r = Get-OverlayRectOrNull $b.X $b.Y $b.Width $b.Height
+                        if ($r) { return @{ Item = $it; Window = $w; Rect = $r } }
+                    }
+                } catch { }
+            }
+        } catch { }
+        Start-Sleep -Milliseconds 250
+    } while ($sw.ElapsedMilliseconds -lt $timeoutMs)
+    return $null
+}
+
+# Sessiz calisir: hicbir hata kullaniciya gosterilmez
+function Show-DangerOverlay([string]$file) {
+    try {
+        if (-not $file -or $file.Contains('"')) { return }
+        Initialize-OverlayTypes
+        [CortmedOverlayNative]::EnableDpi()   # herhangi bir pencere olusmadan once: UIA fiziksel piksel verir
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $found = Find-OverlayItem $file 6000
+        if (-not $found) { return }   # Explorer dosyayi zaten secili gosteriyor; bir sey kaybolmaz
+
+        $rect = $found.Rect
+        $wb = $found.Window.Current.BoundingRectangle
+        $script:ov = @{
+            Item = $found.Item; Win = $found.Window; Rect = $rect; Pulse = 0.0; Start = [Diagnostics.Stopwatch]::StartNew()
+            Key = ('{0},{1},{2},{3}' -f [int]$rect.X, [int]$rect.Y, [int]$rect.Width, [int]$rect.Height)
+            WinKey = ('{0},{1},{2},{3}' -f [int]$wb.X, [int]$wb.Y, [int]$wb.Width, [int]$wb.Height)
+            Hwnd = [int64]$found.Window.Current.NativeWindowHandle
+        }
+        $main = New-Object CortmedOverlayForm
+        $fill = New-Object CortmedOverlayForm
+        $script:ov.Main = $main; $script:ov.Fill = $fill
+        $gm = $main.CreateGraphics()
+        try { $size = Get-OverlayCalloutSize $gm } finally { $gm.Dispose() }
+        $screen = [Windows.Forms.Screen]::FromRectangle($rect).WorkingArea
+        $layout = Get-OverlayLayout $rect $screen $size
+        $script:ov.Layout = $layout
+
+        # Yari saydam kirmizi dolgu: ogenin boyunda, tek renkli, %30 opak ikinci pencere
+        $fill.BackColor = $OverlayRed; $fill.Opacity = 0.30; $fill.Bounds = $rect
+        # Kenarlik + ok + balon: Magenta saydam anahtar, %92 opak
+        $main.BackColor = [Drawing.Color]::Magenta; $main.TransparencyKey = [Drawing.Color]::Magenta; $main.Opacity = 0.92
+        $main.Bounds = $layout.Bounds
+        $main.Add_Paint({
+            param($s, $e)
+            try { Invoke-OverlayPaint $e.Graphics $script:ov.Layout $script:ov.Pulse $script:ov.Layout.Bounds.Location $script:ov.Rect } catch { }
+        })
+
+        $ctx = New-Object Windows.Forms.ApplicationContext
+        $script:ov.Ctx = $ctx
+        $closeAll = { try { foreach ($t in $script:ov.Timers) { $t.Stop() } } catch { }; try { $script:ov.Ctx.ExitThread() } catch { } }
+        $script:ov.Close = $closeAll
+
+        $pulseT = New-Object Windows.Forms.Timer; $pulseT.Interval = 60
+        $pulseT.Add_Tick({
+            try {
+                $script:ov.Pulse = 0.5 + 0.5 * [Math]::Sin($script:ov.Start.ElapsedMilliseconds * 2 * [Math]::PI / 900)
+                $script:ov.Main.Invalidate()
+                if ($script:ov.Start.ElapsedMilliseconds -ge 8000) { & $script:ov.Close }
+            } catch { & $script:ov.Close }
+        })
+        $watchT = New-Object Windows.Forms.Timer; $watchT.Interval = 300
+        $watchT.Add_Tick({
+            try {
+                $b = $script:ov.Item.Current.BoundingRectangle
+                $k = '{0},{1},{2},{3}' -f [int]$b.X, [int]$b.Y, [int]$b.Width, [int]$b.Height
+                $wb2 = $script:ov.Win.Current.BoundingRectangle
+                $wk = '{0},{1},{2},{3}' -f [int]$wb2.X, [int]$wb2.Y, [int]$wb2.Width, [int]$wb2.Height
+                if ($script:ov.Item.Current.IsOffscreen -or $k -ne $script:ov.Key -or $wk -ne $script:ov.WinKey) { & $script:ov.Close; return }
+                # Baska pencereye gecildiyse (kisa bir bekleme suresinden sonra) baskasinin ustunde kalmasin
+                if ($script:ov.Start.ElapsedMilliseconds -gt 1500 -and $script:ov.Hwnd -ne 0 -and [CortmedOverlayNative]::GetForegroundWindow().ToInt64() -ne $script:ov.Hwnd) { & $script:ov.Close }
+            } catch { & $script:ov.Close }   # pencere kapandi ya da oge yok oldu
+        })
+        $script:ov.Timers = @($pulseT, $watchT)
+
+        $fill.Show(); $main.Show()
+        $pulseT.Start(); $watchT.Start()
+        [Windows.Forms.Application]::Run($ctx)
+        foreach ($t in $script:ov.Timers) { $t.Dispose() }
+        $main.Dispose(); $fill.Dispose()
+    } catch {
+        try { Write-Log "Uyari katmani: $($_.Exception.Message)" } catch { }
     }
 }
 
@@ -3341,6 +3622,7 @@ switch ($Mode) {
     }
     'Update' { Initialize-Engine; Update-Database }
     'InstallClamAV' { Install-ClamAV }
+    'Overlay' { Show-DangerOverlay $Path }
     'ScanFile' {
         if ($ScanJson) {
             # Kopru ciktiyi UTF-8 okur; Turkce harfler borudan bozulmadan gecsin
