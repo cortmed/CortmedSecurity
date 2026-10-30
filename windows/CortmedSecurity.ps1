@@ -3029,6 +3029,8 @@ function Build-SettingsAbout($ctx, $p) {
     $link.LinkColor = $UiAccent; $link.ActiveLinkColor = $UiText; $link.Font = New-Font 10
     $link.Add_LinkClicked({ Start-Process 'https://github.com/cortmed/CortmedSecurity' })
     $p.Controls.Add($link)
+    $p.Controls.Add((New-Label 'Cortmed tarafından geliştirilmiştir.' 146 308 $UiText (New-Font 11 'Bold')))
+    $p.Controls.Add((New-Label 'Açık kaynak bileşenler: YARA (VirusTotal, BSD-3), YARA-Forge kuralları. Veri kaynakları: MalwareBazaar, VirusShare, Have I Been Pwned. Microsoft Sysmon ve Defender ayrıca kullanılır.' 146 336 $UiMuted (New-Font 9) 460))
 }
 
 function Select-SettingsPage($ctx, [string]$name) {
