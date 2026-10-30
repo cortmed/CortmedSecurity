@@ -550,13 +550,42 @@ function Test-BytesContain([byte[]]$data, [byte[]]$needle) {
     return $false
 }
 
+# Arsiv icinde YARA'ya verilen, calistirilabilir ya da betik olan dosya turleri
+$ArchiveYaraExtensions = @('.exe', '.dll', '.scr', '.com', '.bat', '.cmd', '.ps1', '.vbs', '.js', '.jse', '.wsf', '.hta', '.jar', '.msi', '.lnk', '.docm', '.xlsm')
+
+# YARA'yi bir klasordeki dosyalara uygular. $Paths: @(yara.exe, kurallar); .yarc derlenmis kurallardir (-C).
+# Sonuc: { rule; score; file } listesi (dosya adi yalnizca yaprak).
+function Invoke-YaraFolder([string]$dir, $Paths) {
+    if (-not $Paths -or -not (Test-Path -LiteralPath $Paths[0]) -or -not (Test-Path -LiteralPath $Paths[1])) { return @() }
+    $flags = @(if ([string]$Paths[1] -like '*.yarc') { '-C' })
+    try {
+        $out = & $Paths[0] -w -m -a 60 @flags $Paths[1] $dir 2>$null
+        return @(foreach ($line in $out) {
+                $m = [regex]::Match([string]$line, '^(\S+)\s+\[(.*)\]\s+(.+)$')
+                if ($m.Success) {
+                    $score = if ($m.Groups[2].Value -match 'score\s*=\s*(\d+)') { [int]$Matches[1] } else { 60 }
+                    [pscustomobject]@{ rule = $m.Groups[1].Value; score = $score; file = [IO.Path]::GetFileName($m.Groups[3].Value.Trim()) }
+                }
+            })
+    } catch { return @() }
+}
+
 # Dosyanin (zip ise icindeki kucuk dosyalarin) bilinen bir zararliyla eslesmesi: EICAR test imzasi ya da
 # veritabanindaki parmak izi. Bulunursa aile adini, yoksa $null dondurur. Boyut ve sayi sinirli; hata sessiz.
-function Get-InnerThreatFamily([string]$file) {
+# -YaraHits ([ref]) verilirse ve YARA hazirsa, zip icindeki calistirilabilir/betik dosyalari gecici bir klasore
+# (adlari bizim verdigimiz, giris yolu asla kullanilmaz) acilip ayni kurallarla taranir; ilk isabet
+# { rule = "<kural> (arşivin içinde: <giris>)"; score } olarak YaraHits.Value'ya yazilir (puan normal YARA isabeti gibi).
+# -YaraPaths: @(yara.exe, kurallar) (testler icin; varsayilan Get-YaraPaths).
+function Get-InnerThreatFamily([string]$file, $YaraHits = $null, $YaraPaths = $null) {
+    $tmp = $null
     try {
         $fi = Get-Item -LiteralPath $file
         if ($fi.Length -le 1MB -and (Test-BytesContain ([IO.File]::ReadAllBytes($file)) $EicarBytes)) { return 'EICAR-Test-File' }
         if ([IO.Path]::GetExtension($file).ToLowerInvariant() -ne '.zip' -or $fi.Length -gt 200MB) { return $null }
+        $yp = $null
+        if ($YaraHits -is [ref]) { $yp = if ($YaraPaths) { $YaraPaths } else { Get-YaraPaths } }
+        $names = @{}
+        $extracted = 0L
         Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
         $zip = [IO.Compression.ZipFile]::OpenRead($file)
         try {
@@ -574,9 +603,34 @@ function Get-InnerThreatFamily([string]$file) {
                     $fam = $script:Db.LookupHex($sha, $md5)
                     if ($fam) { return "$fam (arşivin içinde: $($e.FullName))" }
                 }
+                if ($yp) {
+                    $nm = [string]$e.Name
+                    $dot = $nm.LastIndexOf('.')
+                    $ext = if ($dot -ge 0) { $nm.Substring($dot).ToLowerInvariant() } else { '' }
+                    if ($ext -in $ArchiveYaraExtensions -and ($extracted + $bytes.Length) -le 200MB) {
+                        if (-not $tmp) {
+                            $tmp = Join-Path ([IO.Path]::GetTempPath()) ('cortmed-zip-' + [Guid]::NewGuid().ToString('N'))
+                            [void][IO.Directory]::CreateDirectory($tmp)
+                        }
+                        # Guvenli ad: sira numarasi + izinli uzanti listesinden uzanti (zip-slip yok)
+                        $safe = 'g{0:D4}{1}' -f $n, $ext
+                        [IO.File]::WriteAllBytes((Join-Path $tmp $safe), $bytes)
+                        $names[$safe] = [string]$e.FullName
+                        $extracted += $bytes.Length
+                    }
+                }
             }
         } finally { $zip.Dispose() }
-    } catch { }
+        if ($tmp -and $names.Count) {
+            $hit = @(Invoke-YaraFolder $tmp $yp | Where-Object { $names.ContainsKey($_.file) } | Sort-Object file) | Select-Object -First 1
+            if ($hit) {
+                $YaraHits.Value = @([pscustomobject]@{ rule = "$($hit.rule) (arşivin içinde: $($names[$hit.file]))"; score = $hit.score })
+            }
+        }
+    } catch {
+    } finally {
+        if ($tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     return $null
 }
 
@@ -587,10 +641,13 @@ function Test-FileThreat([string]$file, [switch]$UseVirusTotal, [switch]$SkipCla
     $trusted = $h[0] -in @((Get-Config).trustedHashes)
     if ($trusted -and -not $AlwaysReport) { return $null }
     $family = $script:Db.LookupHex($h[0], $h[1])
-    if ($null -eq $family) { $family = Get-InnerThreatFamily $file }
+    $archiveYara = [ref]$null
+    if ($null -eq $family) { $family = Get-InnerThreatFamily $file -YaraHits $archiveYara }
     $isProgram = $ext -in $ProgramExtensions
     $fromNet = Test-FromInternet $file
     $eng = Get-ContentScan $file -SkipClam:$SkipClam
+    # Arsivin icindeki YARA isabeti normal bir YARA isabeti gibi puanlanir ve raporda gorunur
+    if ($archiveYara.Value) { $eng.yara = @(@($eng.yara) + @($archiveYara.Value)) }
     $vt = if ($UseVirusTotal -and ($isProgram -or $fromNet -or $null -ne $family -or $AlwaysReport)) { Get-VirusTotalInfo $h[0] } else { $null }
     $sig = if ($isProgram -or $ext -in $ScriptExtensions) { Get-AuthenticodeSignature -FilePath $file -ErrorAction SilentlyContinue } else { $null }
     $risk = Get-RiskAssessment $file $family $vt $sig $eng $fromNet

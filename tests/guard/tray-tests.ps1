@@ -622,6 +622,56 @@ try {
     [IO.File]::WriteAllText((Join-Path $work 'temiz.txt'), 'merhaba')
     TCheck 'temiz dosyada imza yok' ($null -eq (Get-InnerThreatFamily (Join-Path $work 'temiz.txt'))) ''
     $EicarBytes = $realEicar
+
+    # Zip icinde YARA: zararsiz bir isarete uyan kendi kuralimiz (gercek zararli yok)
+    $yaraExe = Join-Path $RepoRoot 'engine\.cache\yara-4.5.5\yara64.exe'
+    if (-not (Test-Path -LiteralPath $yaraExe)) {
+        Write-Host 'SKIP zip icinde YARA (engine\.cache\yara-4.5.5\yara64.exe yok)'
+    } else {
+        $marker = 'CORTMED-ZARARSIZ-YARA-ISARETI-' + '5521'
+        $rulesFile = Join-Path $work 'deneme.yar'
+        [IO.File]::WriteAllText($rulesFile, "rule Cortmed_Zararsiz_Isaret`r`n{`r`n  meta:`r`n    score = 80`r`n  strings:`r`n    `$a = `"$marker`"`r`n  condition:`r`n    `$a`r`n}`r`n")
+        $yp = @($yaraExe, $rulesFile)
+        $mkZip = {
+            param([string]$path, [hashtable]$entries)
+            $za = [IO.Compression.ZipFile]::Open($path, 'Create')
+            try {
+                foreach ($k in $entries.Keys) {
+                    $en = $za.CreateEntry($k)
+                    $st = $en.Open(); try { $b = [Text.Encoding]::ASCII.GetBytes($entries[$k]); $st.Write($b, 0, $b.Length) } finally { $st.Dispose() }
+                }
+            } finally { $za.Dispose() }
+        }
+        $tmpBefore = @(Get-ChildItem ([IO.Path]::GetTempPath()) -Directory -Filter 'cortmed-zip-*' -ErrorAction SilentlyContinue).Count
+        $yz = Join-Path $work 'yara-deneme.zip'
+        & $mkZip $yz @{ 'oku.txt' = 'merhaba'; 'alt/ic.exe' = "onek $marker sonek" }
+        $hits = [ref]$null
+        $fam = Get-InnerThreatFamily $yz -YaraHits $hits -YaraPaths $yp
+        TCheck 'zip YARA: isabet bulunur' ($null -eq $fam -and @($hits.Value).Count -eq 1 -and
+            @($hits.Value)[0].rule -eq 'Cortmed_Zararsiz_Isaret (arşivin içinde: alt/ic.exe)' -and @($hits.Value)[0].score -eq 80) (@($hits.Value) | Out-String)
+        $risk = Get-RiskAssessment $yz $null $null $null ([pscustomobject]@{ defender = @{ status = 'clean' }; yara = @($hits.Value); clam = $null }) $false
+        TCheck 'zip YARA: risk puanina normal YARA isabeti gibi girer' ($risk.score -ge 70 -and ($risk.reasons -join ' ').Contains('zararlı yazılım ailesinin')) "$($risk.score)"
+        # yalnizca calistirilabilir/betik turleri acilir
+        $yz2 = Join-Path $work 'yara-metin.zip'
+        & $mkZip $yz2 @{ 'not.txt' = "onek $marker sonek" }
+        $hits2 = [ref]$null
+        [void](Get-InnerThreatFamily $yz2 -YaraHits $hits2 -YaraPaths $yp)
+        TCheck 'zip YARA: metin dosyasi acilmaz' ($null -eq $hits2.Value) ''
+        # zip-slip: giris yolu kullanilmaz, gecici klasor disina dosya yazilmaz
+        $slipName = 'cortmed-slip-' + [Guid]::NewGuid().ToString('N') + '.exe'
+        $yz3 = Join-Path $work 'yara-slip.zip'
+        & $mkZip $yz3 @{ ('../../' + $slipName) = "onek $marker sonek" }
+        $hits3 = [ref]$null
+        [void](Get-InnerThreatFamily $yz3 -YaraHits $hits3 -YaraPaths $yp)
+        $tp = [IO.Path]::GetTempPath()
+        $escaped = (Test-Path (Join-Path $tp $slipName)) -or (Test-Path (Join-Path (Split-Path $tp.TrimEnd('\')) $slipName)) -or
+            (Test-Path (Join-Path (Split-Path (Split-Path $tp.TrimEnd('\'))) $slipName))
+        TCheck 'zip YARA: zip-slip yok, isabet yine bulunur' (-not $escaped -and @($hits3.Value).Count -eq 1 -and @($hits3.Value)[0].rule -like "*(arşivin içinde: ../../$slipName)") ''
+        $tmpAfter = @(Get-ChildItem ([IO.Path]::GetTempPath()) -Directory -Filter 'cortmed-zip-*' -ErrorAction SilentlyContinue).Count
+        TCheck 'zip YARA: gecici klasor silinir' ($tmpAfter -le $tmpBefore) "$tmpBefore -> $tmpAfter"
+        # YaraHits verilmezse eski davranis (YARA calismaz)
+        TCheck 'zip YARA: YaraHits yoksa tarama yok' ($null -eq (Get-InnerThreatFamily $yz -YaraPaths $yp)) ''
+    }
 } catch {
     TCheck 'tepsi testleri calisti' $false $_.Exception.Message
 } finally {
