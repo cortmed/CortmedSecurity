@@ -38,6 +38,9 @@ $yara = Join-Path $src 'engines\yara\yara64.exe'
 if (Test-Path $yara) {
     New-Item -ItemType Directory -Force (Join-Path $dest 'engines\yara') | Out-Null
     Copy-Item $yara (Join-Path $dest 'engines\yara') -Force
+    # YARA'nin ihtiyac duydugu Microsoft C++ calisma kutuphanesi (temiz Windows'ta yok); yara64.exe'nin yanina
+    $vcr = Join-Path $src 'engines\yara\vcruntime140.dll'
+    if (Test-Path $vcr) { Copy-Item $vcr (Join-Path $dest 'engines\yara') -Force }
 }
 $yarc = @((Join-Path $src 'windows.yarc'), (Join-Path $src '..\engine\dist\windows.yarc')) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($yarc) { Copy-Item $yarc (Join-Path $dest 'windows.yarc') -Force }

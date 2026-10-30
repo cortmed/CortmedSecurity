@@ -42,6 +42,12 @@ Copy-Item (Join-Path $root 'engine\rules\behavior_rules.json') $stage
 Copy-Item (Join-Path $root 'engine\dist\windows.cmdb') $stage
 Copy-Item $yarc $stage
 Copy-Item (Join-Path $yaraCache 'yara64.exe') (Join-Path $stage 'engines\yara')
+# yara64.exe VCRUNTIME140.dll ister; temiz Windows'ta yok. Microsoft'un dagitilabilir kutuphanesi uygulamanin
+# yanina konur (imzasi Microsoft olmali). 64 bit kopya System32'den alinir.
+$vcr = Join-Path ([Environment]::SystemDirectory) 'vcruntime140.dll'
+$vsig = Get-AuthenticodeSignature $vcr
+if ($vsig.Status -ne 'Valid' -or $vsig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "vcruntime140.dll imzasi gecersiz: $vcr" }
+Copy-Item $vcr (Join-Path $stage 'engines\yara')
 
 Remove-Item $out -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path "$stage\*" -DestinationPath $out
