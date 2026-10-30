@@ -3196,7 +3196,8 @@ function Build-SettingsAbout($ctx, $p) {
     $link.Add_LinkClicked({ Start-Process 'https://github.com/cortmed/CortmedSecurity' })
     $p.Controls.Add($link)
     $p.Controls.Add((New-Label 'Cortmed tarafından geliştirilmiştir.' 146 308 $UiText (New-Font 11 'Bold')))
-    $p.Controls.Add((New-Label 'Açık kaynak bileşenler: YARA (VirusTotal, BSD-3), YARA-Forge kuralları. Veri kaynakları: MalwareBazaar, VirusShare, Have I Been Pwned. Microsoft Sysmon ve Defender ayrıca kullanılır.' 146 336 $UiMuted (New-Font 9) 460))
+    $p.Controls.Add((New-Label ('© {0} Cortmed. Tüm hakları saklıdır. İzinsiz çoğaltılması ve dağıtılması yasaktır.' -f (Get-Date).Year) 146 334 $UiText (New-Font 9.5) 460))
+    $p.Controls.Add((New-Label 'Açık kaynak bileşenler: YARA (VirusTotal, BSD-3), YARA-Forge kuralları. Veri kaynakları: MalwareBazaar, VirusShare, Have I Been Pwned. Microsoft Sysmon ve Defender ayrıca kullanılır.' 146 380 $UiMuted (New-Font 9) 460))
 }
 
 function Select-SettingsPage($ctx, [string]$name) {
