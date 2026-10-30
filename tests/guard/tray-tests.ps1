@@ -285,6 +285,65 @@ try {
     try { $sum = Get-StatusSummary } catch { $err = $_.Exception.Message }
     TCheck 'findings.json yok: hata yok' ($err -eq '' -and @($sum.threats).Count -eq 0) $err
 
+    # 5) Windows Defender tespitleri: defender: anahtarlari son 24 saatte KIRMIZI tehdit; behavior: gecmis kalir
+    $nowUtc = [DateTime]::UtcNow
+    $dkey = 'defender:' + ('D' * 64)
+    $dold = 'defender:' + ('E' * 64)
+    $dfind = '[{"key":"' + $dkey + '","level":"RED","title":"Virüs durduruldu: kotu.exe","detail":"Cortmed ve Windows Defender bu dosyayı durdurdu ve karantinaya aldı: Trojan:Win32/X. Bir şey yapmanıza gerek yok.","path":"C:\\x\\kotu.exe","tab":"threat","report":"Kaynak: Windows Defender","time":"' + $nowUtc.AddHours(-2).ToString('o') + '"},' +
+        '{"key":"' + $dold + '","level":"RED","title":"Virüs durduruldu: eski.exe","detail":"d","path":"C:\\x\\eski.exe","tab":"threat","report":"r","time":"' + $nowUtc.AddHours(-30).ToString('o') + '"},' +
+        '{"key":"behavior:' + ('a' * 64) + '","level":"RED","title":"Durdurulan program: k.exe","detail":"x","path":"C:\\x\\k.exe","tab":"threat","report":"r","time":"' + $nowUtc.AddHours(-1).ToString('o') + '"}]'
+    [IO.File]::WriteAllText($fj, $dfind, (New-Object Text.UTF8Encoding($false)))
+    $sum = Get-StatusSummary
+    $dt = @($sum.threats | Where-Object { $_.key -eq $dkey })
+    TCheck 'defender: yeni bulgu Tehditler sekmesinde KIRMIZI' ($dt.Count -eq 1 -and $dt[0].level -eq 'RED' -and (Get-FindingTab $dt[0]) -eq 'threat') ''
+    TCheck 'defender: yeni bulgu tepsiyi kirmiziya cevirir' (@($sum.reds | Where-Object { $_.key -eq $dkey }).Count -eq 1) ''
+    TCheck 'defender: alanlar korunur' ($dt.Count -eq 1 -and $dt[0].title -eq 'Virüs durduruldu: kotu.exe' -and $dt[0].path -eq 'C:\x\kotu.exe' -and $dt[0].report -eq 'Kaynak: Windows Defender') ''
+    TCheck 'defender: behavior bulgusu yine gecmis (kirmizi degil)' (@($sum.reds | Where-Object { $_.key -like 'behavior:*' }).Count -eq 0 -and
+        @($sum.advice | Where-Object { $_.key -like 'behavior:*' -and $_.guardLevel -eq 'RED' }).Count -eq 1) ''
+    TCheck 'defender: 24 saatten eski bulgu kirmizi degil' (@($sum.reds | Where-Object { $_.key -eq $dold }).Count -eq 0) ''
+    $dgroups = @(Get-AdviceGroups $sum.advice)
+    $hist = @($dgroups | Where-Object { $_.cat.title -eq 'Durdurulan programlar' })
+    TCheck 'defender: "Durdurulan programlar" grubuna girmez' ($hist.Count -eq 1 -and @($hist[0].items | Where-Object { $_.key -like 'defender:*' }).Count -eq 0) ''
+    $vhist = @($dgroups | Where-Object { $_.cat.title -eq 'Durdurulan virüsler' })
+    TCheck 'defender: eski bulgu "Durdurulan virüsler" gecmisinde' ($vhist.Count -eq 1 -and @($vhist[0].items).Count -eq 1 -and $vhist[0].items[0].key -eq $dold) ''
+    $dact = Get-FindingAction $dt[0]
+    TCheck 'defender: eylem Windows Guvenligi' ($dact -and $dact.kind -eq 'uri' -and $dact.target -eq 'windowsdefender://threat') ''
+    $wn2 = New-Object Collections.ArrayList
+    [void](Invoke-GuardWarnNotices { param($title, $text, $sticky) [void]$wn2.Add($text) })
+    TCheck 'defender: Warn bildirimi gondermez' (-not ($wn2 -join ' ').Contains('kotu.exe')) ($wn2 -join ' / ')
+    Remove-Item $fj -Force
+
+    # alert satiri: Cortmed'in kalici bildirimi (Show-Toast sahte; hicbir sey gosterilmez) ve tepsi yenilemesi
+    $realToast = ${function:Show-Toast}
+    $toasts = New-Object Collections.ArrayList
+    ${function:Show-Toast} = { param($title, $text, [switch]$Sticky) [void]$toasts.Add([pscustomobject]@{ title = $title; text = $text; sticky = [bool]$Sticky }) }
+    if ((Get-Command Show-Toast).ScriptBlock.ToString() -notmatch 'toasts') { throw 'sahte Show-Toast yuklenemedi; gercek bildirim gosterilmez' }
+    try {
+        $refreshed = New-Object Collections.ArrayList
+        $onAlert = { [void]$refreshed.Add(1) }
+        $calls.Clear()
+        $stA = New-GuardState
+        $alertJson = '{"type":"alert","level":"RED","title":"Virüs durduruldu: kotu.exe","detail":"Cortmed ve Windows Defender bu dosyayı durdurdu ve karantinaya aldı: Trojan:Win32/X. Bir şey yapmanıza gerek yok.","path":"C:\\x\\kotu.exe"}'
+        $ra = Receive-GuardPrompt $stA $alertJson $answer -NoShow -OnAlert $onAlert
+        TCheck 'alert: Cortmed kalici bildirimi' ($toasts.Count -eq 1 -and $toasts[0].sticky -and $toasts[0].title -eq 'Cortmed Security - Virüs durduruldu' -and
+            $toasts[0].text.Contains('Virüs durduruldu: kotu.exe') -and $toasts[0].text.Contains('karantinaya aldı')) (($toasts | ForEach-Object { "$($_.title)|$($_.text)" }) -join ' / ')
+        TCheck 'alert: soru penceresi ve cevap yok' ($null -eq $ra -and $stA.open.Count -eq 0 -and $calls.Count -eq 0) ''
+        TCheck 'alert: tepsi yenilenir' ($refreshed.Count -eq 1) ''
+        # zamanlayici tiki uzerinden (sahte istemci)
+        $fakeA = New-Object psobject -Property @{ Connected = $true; Q = (New-Object Collections.Queue) }
+        $fakeA | Add-Member ScriptMethod TryDequeuePrompt { param([ref]$j) if ($this.Q.Count -gt 0) { $j.Value = $this.Q.Dequeue(); return $true }; return $false }
+        $fakeA.Q.Enqueue($alertJson)
+        Invoke-GuardTick (New-GuardState) $fakeA (Get-Date) $answer $notify -NoShow -OnAlert $onAlert
+        TCheck 'alert: tik ile de bildirim' ($toasts.Count -eq 2 -and $refreshed.Count -eq 2) ''
+        [void](Receive-GuardPrompt $stA '{"type":"alert","title":"","detail":""}' $answer -NoShow -OnAlert $onAlert)
+        TCheck 'alert: bos uyari gosterilmez' ($toasts.Count -eq 2) ''
+        $big = '{"type":"alert","title":"Virüs bulundu: a.exe","detail":"' + ('x' * 5000) + '"}'
+        [void](Receive-GuardPrompt $stA $big $answer -NoShow)
+        TCheck 'alert: izin verilen icin baslik, uzun metin kisalir' ($toasts.Count -eq 3 -and $toasts[2].title -eq 'Cortmed Security - Virüs bulundu' -and $toasts[2].text.Length -lt 900) ''
+        $u2 = Receive-GuardPrompt $stA '{"type":"baska2","title":"x"}' $answer -NoShow
+        TCheck 'alert: bilinmeyen tur yine yok sayilir' ($null -eq $u2 -and $toasts.Count -eq 3) ''
+    } finally { ${function:Show-Toast} = $realToast }
+
     # Durum kontrolu metinleri
     $c1 = Get-GuardCheck @{ installed = $true; running = $true; sysmonOk = $true; preexisting = $false }
     $c2 = Get-GuardCheck @{ installed = $true; running = $true; sysmonOk = $true; preexisting = $true }

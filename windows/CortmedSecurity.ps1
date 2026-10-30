@@ -1084,7 +1084,10 @@ function Start-ScanProcess {
 # Bunlar gecmis kayittir, etkin tehdit degil: kirmizi bulgu ancak kullanici "kapat" dedikten sonra yazilir.
 # Bu yuzden Onerilerimiz'de "Durdurulan programlar" altinda, sari olarak gorunur (tepsi kirmiziya donmez);
 # ozgun seviye guardLevel'da saklanir.
-function Get-GuardFindings {
+# Windows Defender'in durdurdugu virusler (defender: anahtarlari) ise gercek tehdittir: son 24 saattekiler
+# Tehditler sekmesinde KIRMIZI kalir (tepsi kirmiziya doner); daha eskileri "Durdurulan virüsler" gecmisine iner.
+function Get-GuardFindings($Now = $null) {
+    if (-not $Now) { $Now = Get-Date }
     try {
         $file = Join-Path $GuardDataDir 'findings.json'
         if (-not [IO.File]::Exists($file)) { return }
@@ -1097,9 +1100,11 @@ function Get-GuardFindings {
                 try { $when = [datetime]::Parse([string]$i.time, [Globalization.CultureInfo]::InvariantCulture, 'RoundtripKind').ToLocalTime() } catch { }
             }
             if ($when) { $detail = '{0:dd.MM.yyyy HH:mm} · {1}' -f $when, $detail }
-            $f = New-Finding ([string]$i.key) 'YELLOW' ([string]$i.title) $detail ([string]$i.path)
+            $level = 'YELLOW'; $tab = 'advice'
+            if ([string]$i.key -like 'defender:*' -and $when -and ($Now - $when).TotalHours -lt 24) { $level = [string]$i.level; $tab = 'threat' }
+            $f = New-Finding ([string]$i.key) $level ([string]$i.title) $detail ([string]$i.path)
             $f | Add-Member -NotePropertyName guardLevel -NotePropertyValue ([string]$i.level)
-            $f | Add-Member -NotePropertyName tab -NotePropertyValue 'advice'
+            $f | Add-Member -NotePropertyName tab -NotePropertyValue $tab
             $f | Add-Member -NotePropertyName report -NotePropertyValue ([string]$i.report)
             $f
         }
@@ -1357,7 +1362,7 @@ function Start-Watcher {
         $state.busy = $true
         try {
             if ($guard.client) {
-                try { Invoke-GuardTick $guard.state $guard.client (Get-Date) $guardAnswer $guardNotify }
+                try { Invoke-GuardTick $guard.state $guard.client (Get-Date) $guardAnswer $guardNotify -OnAlert $updateTray }
                 catch { Write-Log "Bekci sorusu hatasi: $_" }
             }
             $ready = @($pending.Keys | Where-Object { ((Get-Date) - $pending[$_]).TotalSeconds -ge 1.5 })
@@ -1811,6 +1816,7 @@ function Get-FindingAction($f) {
             return @{ label = 'Başlangıç uygulamalarını aç'; kind = 'uri'; target = 'ms-settings:startupapps' }
         }
         'startup-script:*' { return @{ label = 'Başlangıç uygulamalarını aç'; kind = 'uri'; target = 'ms-settings:startupapps' } }
+        'defender:*'     { return @{ label = 'Windows Güvenliği''ni aç'; kind = 'uri'; target = 'windowsdefender://threat' } }
     }
     return (Get-FileSelectAction $f)
 }
@@ -2526,13 +2532,16 @@ $DefaultGuardQuarantine = {
     return $false
 }
 function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [scriptblock]$Notify = $null, $Now = $null, [switch]$NoShow,
-    [scriptblock]$Quarantine = $null) {
+    [scriptblock]$Quarantine = $null, [scriptblock]$OnAlert = $null) {
     if (-not $Now) { $Now = Get-Date }
     $p = $null
     try { $p = $json | ConvertFrom-Json } catch { return $null }
-    if (-not $p -or -not $p.PSObject.Properties['id'] -or -not [string]$p.id) { return $null }
-    $id = [string]$p.id
+    if (-not $p) { return $null }
     $type = if ($p.PSObject.Properties['type']) { [string]$p.type } else { '' }
+    # alert: kimliksiz, cevap beklemeyen virus uyarisi (Windows Defender ya da Cortmed durdurdu)
+    if ($type -eq 'alert') { [void](Receive-GuardAlert $p $OnAlert); return $null }
+    if (-not $p.PSObject.Properties['id'] -or -not [string]$p.id) { return $null }
+    $id = [string]$p.id
     switch ($type) {
         'ask' {
             $state.resent[$id] = $true
@@ -2569,6 +2578,21 @@ function Receive-GuardPrompt($state, [string]$json, [scriptblock]$answer, [scrip
     return $null
 }
 
+# Hizmetin virus uyarisi: Cortmed adiyla kapatilana kadar kalan bildirim; ardindan $OnAlert (tepsi simgesini yeniler).
+# Bulgunun kendisi hizmetin findings.json'unda (tepsi bagli degilken de kaybolmaz). Gosterildiyse $true.
+function Receive-GuardAlert($p, [scriptblock]$OnAlert = $null) {
+    $cut = { param([string]$s, [int]$max) $s = ($s -replace '[\x00-\x1f]', ' ').Trim(); if ($s.Length -gt $max) { $s.Substring(0, $max - 1) + '…' } else { $s } }
+    $title = & $cut ([string]$p.title) 200
+    $detail = & $cut ([string]$p.detail) 600
+    if (-not $title -and -not $detail) { return $false }
+    $text = if ($title -and $detail) { "$title`n$detail" } elseif ($title) { $title } else { $detail }
+    $head = if ($title -like 'Virüs bulundu*') { 'Cortmed Security - Virüs bulundu' } else { 'Cortmed Security - Virüs durduruldu' }
+    Write-Log "Bekci virus uyarisi: $title"
+    Show-Toast $head $text -Sticky
+    if ($OnAlert) { try { & $OnAlert } catch { Write-Log "Tepsi yenilenemedi: $_" } }
+    return $true
+}
+
 function Show-GuardPrompt($state, [string]$promptJson, [scriptblock]$answer, [scriptblock]$Notify = $null) {
     return Receive-GuardPrompt $state $promptJson $answer -Notify $Notify
 }
@@ -2583,7 +2607,8 @@ function Get-GuardOverdue($state, [datetime]$now) {
 
 # Bekci zamanlayicisinin bir tiki (Start-Watcher her saniye cagirir; testte sahte istemci ve saatle).
 # Yeniden baglantidan 5 sn sonra hizmetin yeniden gondermedigi cevapsiz sorular geri cekilmis sayilir.
-function Invoke-GuardTick($state, $client, [datetime]$now, [scriptblock]$answer, [scriptblock]$notify, [switch]$NoShow) {
+function Invoke-GuardTick($state, $client, [datetime]$now, [scriptblock]$answer, [scriptblock]$notify, [switch]$NoShow,
+    [scriptblock]$OnAlert = $null) {
     $connected = [bool]$client.Connected
     if ($connected -and -not $state.connected) { $state.connectedAt = $now; $state.resent = @{}; $state.reconciled = $false }
     $state.connected = $connected
@@ -2591,7 +2616,7 @@ function Invoke-GuardTick($state, $client, [datetime]$now, [scriptblock]$answer,
     $pj = $null; $n = 0
     while ($n -lt 10 -and $client.TryDequeuePrompt([ref]$pj)) {
         $n++
-        [void](Receive-GuardPrompt $state $pj $answer -Notify $notify -Now $now -NoShow:$NoShow)
+        [void](Receive-GuardPrompt $state $pj $answer -Notify $notify -Now $now -NoShow:$NoShow -OnAlert $OnAlert)
     }
 
     if ($connected -and -not $state.reconciled -and ($now - $state.connectedAt).TotalSeconds -ge 5) {
@@ -3271,6 +3296,11 @@ $AdviceCategories = @(
     @{ id = 'guard-history'; prefixes = @('behavior'); guardLevel = 'RED'
         icon = '🛑'; title = 'Durdurulan programlar'
         text = 'Cortmed bu programları durdurdu ve sizin onayınızla kapattı. Dosyaları hâlâ bilgisayarınızda; tanımıyorsanız listeden açıp ''Karantinaya al'' ile kaldırın.'
+        button = 'Listeyi göster' }
+    # 24 saatten eski Windows Defender tespitleri (yenileri Tehditler sekmesinde kirmizi)
+    @{ id = 'defender-history'; prefixes = @('defender')
+        icon = '🛡'; title = 'Durdurulan virüsler'
+        text = 'Cortmed ve Windows Defender bu virüsleri durdurdu. Bir şey yapmanıza gerek yok.'
         button = 'Listeyi göster' }
 )
 
