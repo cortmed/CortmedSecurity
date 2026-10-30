@@ -1780,6 +1780,21 @@ $ActionSchemes = @('windowsdefender:', 'ms-settings:')
 
 # Eylemi baslatir. $Launcher: { param($file, $argText) } (testlerde Start-Process yerine), $Notify: { param($text) }.
 # Basari: $true. Reddedilen ya da acilamayan eylem: sade Turkce mesaj, $false.
+# Bir adres semasinin (or. windowsdefender:) bu bilgisayarda acan bir uygulamasi var mi
+function Test-UriHandler([string]$scheme) {
+    try {
+        $k = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey($scheme)
+        if (-not $k) { return $false }
+        $ok = $null -ne $k.GetValue('URL Protocol')
+        $k.Close()
+        # windowsdefender: kaydi olsa bile Windows Guvenligi uygulamasi kurulu olmayabilir (Sandbox gibi)
+        if ($ok -and $scheme -eq 'windowsdefender') {
+            $ok = $null -ne (Get-AppxPackage -Name 'Microsoft.SecHealthUI' -ErrorAction SilentlyContinue)
+        }
+        return $ok
+    } catch { return $false }
+}
+
 function Invoke-FindingAction($action, [scriptblock]$Launcher = $null, [scriptblock]$Notify = $null) {
     if (-not $Launcher) { $Launcher = { param($file, $argText) if ($argText) { Start-Process -FilePath $file -ArgumentList $argText } else { Start-Process -FilePath $file } } }
     if (-not $Notify) { $Notify = { param($text) [Windows.Forms.MessageBox]::Show($text, 'Cortmed Security') | Out-Null } }
@@ -1792,6 +1807,10 @@ function Invoke-FindingAction($action, [scriptblock]$Launcher = $null, [scriptbl
                 $ok = $false
                 foreach ($s in $ActionSchemes) { if ($target.StartsWith($s, [StringComparison]::OrdinalIgnoreCase)) { $ok = $true } }
                 if (-not $ok -or $target -match '\s') { throw "izinsiz adres: $target" }
+                # Windows Guvenligi uygulamasi yoksa (or. Sandbox, bazi surumler) Ayarlar'daki sayfasina git
+                if ($target.StartsWith('windowsdefender:', [StringComparison]::OrdinalIgnoreCase) -and -not (Test-UriHandler 'windowsdefender')) {
+                    $target = 'ms-settings:windowsdefender'
+                }
                 & $Launcher $target ''
             }
             'exe' {
