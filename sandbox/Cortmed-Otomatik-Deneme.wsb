@@ -1,0 +1,18 @@
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\Cortmedd\OneDrive\Desktop\CortmedSecurity\sandbox</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\Cortmed</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\Users\Cortmedd\OneDrive\Desktop\CortmedSecurity\sandbox-results</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <Networking>Enable</Networking>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\WDAGUtilityAccount\Desktop\Cortmed\auto\run-tests.ps1</Command>
+  </LogonCommand>
+</Configuration>

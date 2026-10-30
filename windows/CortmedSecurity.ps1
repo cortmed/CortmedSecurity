@@ -2000,6 +2000,9 @@ public static class CortmedOverlayNative {
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+    // Sol ya da sag fare dugmesi su an basili mi
+    public static bool MouseDown() { return (GetAsyncKeyState(1) & 0x8000) != 0 || (GetAsyncKeyState(2) & 0x8000) != 0; }
     public static void EnableDpi() {
         try { SetProcessDpiAwarenessContext(new IntPtr(-4)); return; } catch (Exception) { }
         try { SetProcessDPIAware(); } catch (Exception) { }
@@ -2066,7 +2069,7 @@ function Show-DangerOverlay([string]$file) {
         try { $size = Get-OverlayCalloutSize $gm } finally { $gm.Dispose() }
         $screen = [Windows.Forms.Screen]::FromRectangle($rect).WorkingArea
         $layout = Get-OverlayLayout $rect $screen $size
-        $script:ov.Layout = $layout
+        $script:ov.Layout = $layout; $script:ov.Size = $size
 
         # Yari saydam kirmizi dolgu: ogenin boyunda, tek renkli, %30 opak ikinci pencere
         $fill.BackColor = $OverlayRed; $fill.Opacity = 0.30; $fill.Bounds = $rect
@@ -2083,12 +2086,17 @@ function Show-DangerOverlay([string]$file) {
         $closeAll = { try { foreach ($t in $script:ov.Timers) { $t.Stop() } } catch { }; try { $script:ov.Ctx.ExitThread() } catch { } }
         $script:ov.Close = $closeAll
 
+        # Katman kullanici 2 kez tiklayana kadar kalir (en fazla 2 dakika). Fare tiklamalari dinlenir.
+        $script:ov.Clicks = 0; $script:ov.WasDown = [CortmedOverlayNative]::MouseDown()
         $pulseT = New-Object Windows.Forms.Timer; $pulseT.Interval = 60
         $pulseT.Add_Tick({
             try {
                 $script:ov.Pulse = 0.5 + 0.5 * [Math]::Sin($script:ov.Start.ElapsedMilliseconds * 2 * [Math]::PI / 900)
                 $script:ov.Main.Invalidate()
-                if ($script:ov.Start.ElapsedMilliseconds -ge 8000) { & $script:ov.Close }
+                $down = [CortmedOverlayNative]::MouseDown()
+                if ($down -and -not $script:ov.WasDown) { $script:ov.Clicks++ }
+                $script:ov.WasDown = $down
+                if ($script:ov.Clicks -ge 2 -or $script:ov.Start.ElapsedMilliseconds -ge 120000) { & $script:ov.Close }
             } catch { & $script:ov.Close }
         })
         $watchT = New-Object Windows.Forms.Timer; $watchT.Interval = 300
@@ -2096,11 +2104,21 @@ function Show-DangerOverlay([string]$file) {
             try {
                 $b = $script:ov.Item.Current.BoundingRectangle
                 $k = '{0},{1},{2},{3}' -f [int]$b.X, [int]$b.Y, [int]$b.Width, [int]$b.Height
-                $wb2 = $script:ov.Win.Current.BoundingRectangle
-                $wk = '{0},{1},{2},{3}' -f [int]$wb2.X, [int]$wb2.Y, [int]$wb2.Width, [int]$wb2.Height
-                if ($script:ov.Item.Current.IsOffscreen -or $k -ne $script:ov.Key -or $wk -ne $script:ov.WinKey) { & $script:ov.Close; return }
-                # Baska pencereye gecildiyse (kisa bir bekleme suresinden sonra) baskasinin ustunde kalmasin
-                if ($script:ov.Start.ElapsedMilliseconds -gt 1500 -and $script:ov.Hwnd -ne 0 -and [CortmedOverlayNative]::GetForegroundWindow().ToInt64() -ne $script:ov.Hwnd) { & $script:ov.Close }
+                $offscreen = $script:ov.Item.Current.IsOffscreen
+                # Dosya kaydirildi ya da pencere tasindi: katmani yeni yere tasi
+                if (-not $offscreen -and $k -ne $script:ov.Key) {
+                    $r = Get-OverlayRectOrNull $b.X $b.Y $b.Width $b.Height
+                    if ($r) {
+                        $script:ov.Rect = $r; $script:ov.Key = $k
+                        $scr = [Windows.Forms.Screen]::FromRectangle($r).WorkingArea
+                        $script:ov.Layout = Get-OverlayLayout $r $scr $script:ov.Size
+                        $script:ov.Fill.Bounds = $r; $script:ov.Main.Bounds = $script:ov.Layout.Bounds
+                    }
+                }
+                # Explorer one gelmediyse baska programin ustunde durmasin: gizle (kapatma), geri gelince goster
+                $front = $script:ov.Hwnd -eq 0 -or [CortmedOverlayNative]::GetForegroundWindow().ToInt64() -eq $script:ov.Hwnd
+                $visible = $front -and -not $offscreen
+                if ($script:ov.Main.Visible -ne $visible) { $script:ov.Main.Visible = $visible; $script:ov.Fill.Visible = $visible }
             } catch { & $script:ov.Close }   # pencere kapandi ya da oge yok oldu
         })
         $script:ov.Timers = @($pulseT, $watchT)
