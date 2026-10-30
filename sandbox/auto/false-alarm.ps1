@@ -23,7 +23,7 @@ try {
     $dl = Join-Path $env:USERPROFILE 'Downloads'
     New-Item -ItemType Directory -Force $dl | Out-Null
     $apps = @(
-        @{ n = 'Chrome'; u = 'https://dl.google.com/chrome/install/latest/chrome_installer.exe'; f = 'chrome_installer.exe'; a = '/silent /install'; w = 300 },
+        @{ n = 'Chrome'; u = 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi'; f = 'chrome.msi'; a = 'msi'; w = 400 },
         @{ n = 'Discord'; u = 'https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64'; f = 'DiscordSetup.exe'; a = '-s'; w = 240 },
         @{ n = 'Steam'; u = 'https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe'; f = 'SteamSetup.exe'; a = '/S'; w = 240 }
     )
@@ -31,7 +31,7 @@ try {
         $file = Join-Path $dl $a.f
         try {
             Invoke-WebRequest $a.u -OutFile $file -UseBasicParsing -TimeoutSec 300
-            $p = Start-Process $file -ArgumentList $a.a -PassThru
+            $p = if ($a.a -eq 'msi') { Start-Process msiexec.exe -ArgumentList '/i', "`"$file`"", '/qn' -PassThru } else { Start-Process $file -ArgumentList $a.a -PassThru }
             [void]$p.WaitForExit($a.w * 1000)
             Start-Sleep 60   # kurulumun ardindan acilan guncelleyiciler ve ilk calisma
             Step "$($a.n) indirildi ve kuruldu" $true ''
