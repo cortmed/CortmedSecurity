@@ -365,7 +365,20 @@ foreach ($s in $ig, $ug) {
     Check "$leaf kullanici icerigi uzerinde ozyinelemeli silme yok" ($txt -notmatch 'Remove-TreeSafe|Remove-EntrySafe|GetFileSystemInfos') ''
 }
 $igTxt = if (Test-Path $ig) { Get-Content $ig -Raw -Encoding UTF8 } else { '' }
-Check 'Install-Guard imzalayan tam eslesme' ($igTxt -match 'GetNameInfo' -and $igTxt -match "-ne 'Microsoft Corporation'" -and $igTxt -notmatch '-like[^\r\n]*Microsoft') ''
+Check 'Install-Guard imzalayan tam eslesme' ($igTxt -match 'GetNameInfo' -and $igTxt -match "'O=Microsoft Corporation'" -and $igTxt -match 'Microsoft Root Certificate Authority' -and $igTxt -notmatch '-like[^\r\n]*Microsoft') ''
+# Test-MicrosoftSigned davranisi: Microsoft imzali sistem dosyasi kabul, imzasiz dosya red
+$tmsAst = [System.Management.Automation.Language.Parser]::ParseInput($igTxt, [ref]$null, [ref]$null)
+$tmsFn = $tmsAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-MicrosoftSigned' }, $true)
+if ($tmsFn) {
+    . ([scriptblock]::Create($tmsFn.Extent.Text))
+    $msFile = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    Check 'Test-MicrosoftSigned: Microsoft imzali dosya kabul' (Test-MicrosoftSigned (Get-AuthenticodeSignature $msFile)) ''
+    $unsigned = Join-Path $env:TEMP ("cortmed-unsigned-" + [guid]::NewGuid().ToString('N') + '.ps1')
+    Set-Content $unsigned 'Write-Host x'
+    Check 'Test-MicrosoftSigned: imzasiz dosya red' (-not (Test-MicrosoftSigned (Get-AuthenticodeSignature $unsigned))) ''
+    Remove-Item $unsigned -Force -ErrorAction SilentlyContinue
+    Check 'Test-MicrosoftSigned: bos imza red' (-not (Test-MicrosoftSigned $null)) ''
+} else { Check 'Install-Guard Test-MicrosoftSigned var' $false '' }
 
 # Install-Guard'in kullandigi derleme komutu depo kaynaklariyla derlenir (gecici klasore)
 $csc64 = Join-Path $env:windir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'

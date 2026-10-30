@@ -312,6 +312,22 @@ function Initialize-SecureDir([string]$dir, $handle) {
 }
 
 # Yalnizca yoneticilerin yazabildigi klasorlerin altindaki gecici klasorler icin; rmdir /s baglantilari izlemez
+# Imza gecerli, imzalayan kurum (O=) tam olarak "Microsoft Corporation", imzalayan ad bilinen bir Microsoft adi
+# ve zincir Microsoft kok sertifikasina varmali. (Sysmon 2026 itibariyla "Microsoft Windows Publisher" ile imzali.)
+function Test-MicrosoftSigned($sig) {
+    if (-not $sig -or $sig.Status -ne [Management.Automation.SignatureStatus]::Valid -or -not $sig.SignerCertificate) { return $false }
+    $cert = $sig.SignerCertificate
+    $parts = @($cert.Subject -split ',\s*')
+    if ($parts -notcontains 'O=Microsoft Corporation') { return $false }
+    $cn = $cert.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    if (@('Microsoft Corporation', 'Microsoft Windows Publisher', 'Microsoft Windows') -notcontains $cn) { return $false }
+    $chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+    $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+    if (-not $chain.Build($cert)) { return $false }
+    $root = $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate
+    return ($root.Subject -match '^CN=Microsoft Root Certificate Authority( \d{4})?, O=Microsoft Corporation,')
+}
+
 function Remove-AdminDir([string]$p) {
     if (Test-Entry $p) { & $cmd /c rmdir /s /q "$p" | Out-Null }
 }
@@ -397,8 +413,7 @@ try {
             $s64 = Join-Path $tmp 'Sysmon64.exe'
             if (-not (Test-Path $s64)) { throw 'İndirilen pakette Sysmon64.exe yok; Sysmon kurulmadı.' }
             $sig = Get-AuthenticodeSignature $s64
-            $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) }
-            if ($sig.Status -ne [Management.Automation.SignatureStatus]::Valid -or $signer -ne 'Microsoft Corporation') {
+            if (-not (Test-MicrosoftSigned $sig)) {
                 throw "Sysmon64.exe'nin Microsoft imzası doğrulanamadı; güvenlik için Sysmon kurulmadı."
             }
             & $s64 -accepteula -i $dataXml | Out-Null
