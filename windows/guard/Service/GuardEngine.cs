@@ -167,20 +167,26 @@ namespace Cortmed.Guard
             return list;
         }
 
+        // Davranis motoru ve Defender izleyicisi ayri thread'lerden yazar: oku-degistir-yaz tek kilit altinda.
+        static readonly object Gate = new object();
+
         public static void Upsert(string file, Dictionary<string, object> finding)
         {
-            List<Dictionary<string, object>> list;
-            try { list = Read(file); }
-            catch { list = new List<Dictionary<string, object>>(); } // bozuk dosya: bastan yaz
-            string key = Convert.ToString(finding["key"]);
-            list.RemoveAll(f =>
+            lock (Gate)
             {
-                object k;
-                return f.TryGetValue("key", out k) && Convert.ToString(k) == key;
-            });
-            list.Insert(0, finding);
-            if (list.Count > Max) list.RemoveRange(Max, list.Count - Max);
-            AtomicFile.WriteAllText(file, Serializer().Serialize(list));
+                List<Dictionary<string, object>> list;
+                try { list = Read(file); }
+                catch { list = new List<Dictionary<string, object>>(); } // bozuk dosya: bastan yaz
+                string key = Convert.ToString(finding["key"]);
+                list.RemoveAll(f =>
+                {
+                    object k;
+                    return f.TryGetValue("key", out k) && Convert.ToString(k) == key;
+                });
+                list.Insert(0, finding);
+                if (list.Count > Max) list.RemoveRange(Max, list.Count - Max);
+                AtomicFile.WriteAllText(file, Serializer().Serialize(list));
+            }
         }
     }
 

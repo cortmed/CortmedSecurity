@@ -337,6 +337,8 @@ namespace Cortmed.Guard
         GuardEngine _engine;
         GuardPipe _pipe;
         SysmonReader _reader;
+        DefenderWatcher _defender;
+        DefenderAlerts _defenderAlerts;
         RealProcessControl _control;
         Timer _sysmonTimer;
         Timer _updateTimer;
@@ -383,6 +385,7 @@ namespace Cortmed.Guard
             _pipe.Start();
             _reader = new SysmonReader(_engine.OnEvent, msg => _log.Write(msg));
             if (_reader.Start()) _log.Write("Sysmon günlüğü izleniyor.");
+            StartDefenderWatcher();
             _sysmonTimer = new Timer(SysmonTick, null, 0, 30000);
             _updateTimer = new Timer(UpdateTick, null, TimeSpan.FromMinutes(2), TimeSpan.FromHours(24));
         }
@@ -415,7 +418,27 @@ namespace Cortmed.Guard
             if (_sysmonTimer != null) { _sysmonTimer.Dispose(); _sysmonTimer = null; }
             if (_updateTimer != null) { _updateTimer.Dispose(); _updateTimer = null; }
             if (_reader != null) { _reader.Dispose(); _reader = null; }
+            if (_defender != null) { _defender.Dispose(); _defender = null; }
             if (_pipe != null) { _pipe.Dispose(); _pipe = null; }
+        }
+
+        // Windows Defender tespitleri (1116/1117): bulgu + tepsiye Cortmed uyarisi. Hicbir hata hizmeti dusurmez.
+        void StartDefenderWatcher()
+        {
+            try
+            {
+                _defenderAlerts = new DefenderAlerts(Path.Combine(_dataDir, "findings.json"), SendAlert, _log);
+                var alerts = _defenderAlerts;
+                _defender = new DefenderWatcher(d => alerts.Handle(d, DateTime.UtcNow), msg => _log.Write(msg));
+                if (_defender.Start()) _log.Write("Windows Defender günlüğü izleniyor.");
+            }
+            catch (Exception ex) { _log.Write("Windows Defender izleyicisi başlatılamadı: " + ex.Message); }
+        }
+
+        bool SendAlert(string level, string title, string detail, string path)
+        {
+            var p = _pipe;
+            return p != null && p.SendAlert(level, title, detail, path);
         }
 
         bool OnAnswer(string id, string decision)
@@ -458,6 +481,8 @@ namespace Cortmed.Guard
                 if (ok && !_stopping && !r.IsWatching && r.Start()) _log.Write("Sysmon günlüğü izleniyor.");
                 if (!ok && _lastSysmonOk) _log.Write("Sysmon başlatılamadı; davranış bekçisi kapalı.");
                 _lastSysmonOk = ok;
+                var dw = _defender;
+                if (dw != null && !_stopping && !dw.IsWatching && dw.Start()) _log.Write("Windows Defender günlüğü izleniyor.");
                 SendStatus();
             }
             catch (Exception ex) { _log.Write("Sysmon denetimi hatası: " + ex.Message); }

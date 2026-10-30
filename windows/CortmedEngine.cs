@@ -439,9 +439,9 @@ namespace Cortmed
                 if (top == null) return;
                 string type;
                 if (!top.TryGetValue("type", out type)) return;
-                // ask, withdraw (soru geri cekildi) ve result (cevap sonucu) ayni kuyruga ham JSON olarak girer;
-                // tepsi "type" alanina gore ayirir
-                if (type == "ask" || type == "withdraw" || type == "result")
+                // ask, withdraw (soru geri cekildi), result (cevap sonucu) ve alert (Defender/virus uyarisi)
+                // ayni kuyruga ham JSON olarak girer; tepsi "type" alanina gore ayirir
+                if (type == "ask" || type == "withdraw" || type == "result" || type == "alert")
                 {
                     lock (_lock)
                     {

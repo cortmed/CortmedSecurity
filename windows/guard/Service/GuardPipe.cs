@@ -129,6 +129,45 @@ namespace Cortmed.Guard
             catch { }
         }
 
+        // Virus uyarisi satiri ({"type":"alert",...}); 4096 bayta sigmazsa once yol, sonra ayrinti, sonra baslik kisalir.
+        // Hic sigmazsa null.
+        public static byte[] AlertLine(string level, string title, string detail, string path)
+        {
+            string lv = level == "YELLOW" ? "YELLOW" : "RED";
+            string t = Trunc(title, 256);
+            string de = Trunc(detail, 1024);
+            string pa = Trunc(path, 512);
+            var ser = new JavaScriptSerializer();
+            var enc = new UTF8Encoding(false);
+            while (true)
+            {
+                var d = new Dictionary<string, object>();
+                d["type"] = "alert";
+                d["level"] = lv;
+                d["title"] = t;
+                d["detail"] = de;
+                d["path"] = pa;
+                byte[] data = enc.GetBytes(ser.Serialize(d) + "\n");
+                if (data.Length <= MaxOut) return data;
+                if (pa.Length > 16) pa = Trunc(pa, pa.Length / 2);
+                else if (pa.Length > 0) pa = "";
+                else if (de.Length > 16) de = Trunc(de, de.Length / 2);
+                else if (t.Length > 16) t = Trunc(t, t.Length / 2);
+                else return null;
+            }
+        }
+
+        // true: uyari satiri bagli istemciye yazildi. Istemci yoksa false (bulgu findings.json'da kalir).
+        public bool SendAlert(string level, string title, string detail, string path)
+        {
+            try
+            {
+                byte[] data = AlertLine(level, title, detail, path);
+                return data != null && Write(data);
+            }
+            catch { return false; }
+        }
+
         // Soru geri cekildi (donuk agac kendiliginden bitti). true: satir istemciye yazildi.
         public bool SendWithdraw(string id)
         {

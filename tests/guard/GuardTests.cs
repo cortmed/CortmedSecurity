@@ -1728,6 +1728,147 @@ public static class GuardTests
         Assert(RulesStore.LoadTrusted(dir3, k.X, k.Y, log).FreezeAt == 77, "eski kurallar yerinde");
     }
 
+    // ---- Windows Defender tespitleri ----
+
+    static DefenderDetection DefenderFixture(string name)
+    {
+        return DefenderEvents.Parse(File.ReadAllText(RepoPath("tests/guard/fixtures/" + name), Encoding.UTF8));
+    }
+
+    [Test]
+    static void DefenderParses1116And1117()
+    {
+        var d6 = DefenderFixture("defender-event-1116.xml");
+        Assert(d6 != null && d6.EventId == 1116, "1116 ayristirilmali");
+        Assert(d6.ThreatName == "Trojan:Win32/Wacatac.B!ml", "tehdit adi: " + d6.ThreatName);
+        Assert(d6.Severity == "Severe" && d6.User == @"EV-PC\Ahmet", "onem/kullanici");
+        Assert(d6.Paths.Count == 2, "dosya yollari (onek kirpildi, process ve arsiv-ici tekrar atildi): " + string.Join(" | ", d6.Paths));
+        Assert(d6.Paths[0] == @"C:\Users\Ahmet\Downloads\oyun-hilesi.exe", "ilk yol: " + d6.Paths[0]);
+        Assert(d6.Paths[1] == @"C:\Users\Ahmet\Downloads\hile-paketi.zip", "ikinci yol: " + d6.Paths[1]);
+        Assert(d6.Time == new DateTime(2026, 10, 30, 9, 14, 2, DateTimeKind.Utc).AddTicks(5312345), "zaman: " + d6.Time.ToString("o"));
+        Assert(DefenderEvents.Detail(d6) == "Cortmed ve Windows Defender bu dosyada virüs buldu: Trojan:Win32/Wacatac.B!ml.", DefenderEvents.Detail(d6));
+        Assert(DefenderEvents.Title(d6) == "Virüs durduruldu: oyun-hilesi.exe", DefenderEvents.Title(d6));
+
+        var d7 = DefenderFixture("defender-event-1117.xml");
+        Assert(d7 != null && d7.EventId == 1117 && d7.Action == "Quarantine", "1117 islem");
+        Assert(DefenderEvents.Detail(d7) == "Cortmed ve Windows Defender bu dosyayı durdurdu ve karantinaya aldı: Trojan:Win32/Wacatac.B!ml. Bir şey yapmanıza gerek yok.",
+            DefenderEvents.Detail(d7));
+        Assert(DefenderEvents.Key(d6) == DefenderEvents.Key(d7), "1116 ve 1117 ayni anahtar");
+        Assert(DefenderEvents.Key(d7).StartsWith("defender:") && DefenderEvents.Key(d7).Length == "defender:".Length + 64, "anahtar bicimi");
+
+        var f = DefenderEvents.ToFinding(d7);
+        Assert((string)f["level"] == "RED" && (string)f["tab"] == "threat", "kirmizi tehdit");
+        Assert((string)f["path"] == @"C:\Users\Ahmet\Downloads\oyun-hilesi.exe", "bulgu yolu ilk dosya");
+        Assert(((string)f["report"]).Contains(@"C:\Users\Ahmet\Downloads\hile-paketi.zip") && ((string)f["report"]).Contains(@"EV-PC\Ahmet"), "rapor tum yollar ve kullanici");
+        Assert(((string)f["time"]).StartsWith("2026-10-30T09:14:03"), "bulgu zamani: " + f["time"]);
+
+        // Sysmon ya da baska bir olay Defender tespiti degildir
+        Assert(DefenderEvents.Parse(File.ReadAllText(RepoPath("tests/guard/fixtures/sysmon-event-1.xml"), Encoding.UTF8)) == null, "baska olay null");
+    }
+
+    [Test]
+    static void DefenderPathsAndActions()
+    {
+        var p = DefenderEvents.SplitPaths(@"webfile:_C:\Users\a\Downloads\x.exe|https://kotu.example/x.exe|pid:4,ProcessStart:1; regkey:_HKLM\SOFTWARE\x;file:_\\?\C:\a b\y.dll ; ; C:\duz\z.js");
+        Assert(p.Count == 3 && p[0] == @"C:\Users\a\Downloads\x.exe" && p[1] == @"C:\a b\y.dll" && p[2] == @"C:\duz\z.js", string.Join(" | ", p));
+        Assert(DefenderEvents.SplitPaths("").Count == 0 && DefenderEvents.SplitPaths(null).Count == 0, "bos");
+        Assert(DefenderEvents.ActionVerb("Quarantine") == "karantinaya aldı", "Quarantine");
+        Assert(DefenderEvents.ActionVerb("Remove") == "sildi", "Remove");
+        Assert(DefenderEvents.ActionVerb("Block") == "engelledi", "Block");
+        Assert(DefenderEvents.ActionVerb("Allow") == "izin verildi", "Allow");
+        Assert(DefenderEvents.ActionVerb("Clean") == "durdurdu", "diger");
+        Assert(DefenderEvents.ActionVerb("Not Applicable") == null && DefenderEvents.ActionVerb("") == null, "islem yok");
+
+        var d = new DefenderDetection { EventId = 1117, ThreatName = "Virus:Win32/X", Action = "Remove" };
+        d.Paths.Add(@"C:\x\a.exe");
+        Assert(DefenderEvents.Detail(d) == "Cortmed ve Windows Defender bu dosyayı durdurdu ve sildi: Virus:Win32/X. Bir şey yapmanıza gerek yok.", DefenderEvents.Detail(d));
+        d.Action = "Clean";
+        Assert(DefenderEvents.Detail(d) == "Cortmed ve Windows Defender bu dosyayı durdurdu: Virus:Win32/X. Bir şey yapmanıza gerek yok.", DefenderEvents.Detail(d));
+        d.Action = "Allow";
+        Assert(DefenderEvents.Detail(d).StartsWith("Bu dosyada virüs bulundu ama dosyaya izin verildi: Virus:Win32/X."), DefenderEvents.Detail(d));
+        Assert(DefenderEvents.Title(d) == "Virüs bulundu: a.exe", DefenderEvents.Title(d));
+    }
+
+    [Test]
+    static void DefenderAlertsDedupeAndUpdate()
+    {
+        string dir = NewDataDir();
+        string file = Path.Combine(dir, "findings.json");
+        var sent = new List<string>();
+        var alerts = new DefenderAlerts(file, (l, t, de, pa) => { sent.Add(l + "|" + t + "|" + de + "|" + pa); return true; }, new GuardLog(Path.Combine(dir, "guard.log")));
+        var d6 = DefenderFixture("defender-event-1116.xml");
+        var d7 = DefenderFixture("defender-event-1117.xml");
+        var t0 = new DateTime(2026, 10, 30, 9, 14, 2, DateTimeKind.Utc);
+
+        // davranis bulgusu da varken
+        FindingStore.Upsert(file, new Dictionary<string, object> { { "key", "behavior:x" }, { "level", "YELLOW" }, { "title", "t" } });
+        Assert(alerts.Handle(d6, t0), "ilk tespit uyarir");
+        Assert(sent.Count == 1 && sent[0].StartsWith("RED|Virüs durduruldu: oyun-hilesi.exe|Cortmed ve Windows Defender bu dosyada virüs buldu"), "uyari: " + string.Join(" / ", sent));
+        Assert(sent[0].EndsWith(@"|C:\Users\Ahmet\Downloads\oyun-hilesi.exe"), "uyari yolu");
+
+        Assert(!alerts.Handle(d7, t0.AddSeconds(1)), "1117 ayni oge: 10 dk icinde ikinci uyari yok");
+        Assert(!alerts.Handle(d7, t0.AddMinutes(9)), "9. dakikada yine uyari yok");
+        Assert(sent.Count == 1, "tek uyari: " + sent.Count);
+        var list = FindingStore.Read(file);
+        var mine = list.Where(x => Convert.ToString(x["key"]).StartsWith("defender:")).ToList();
+        Assert(mine.Count == 1, "1117 ayni anahtari gunceller, cift kayit yok: " + mine.Count);
+        Assert(((string)mine[0]["detail"]).Contains("karantinaya aldı"), "bulgu islemle guncellendi: " + mine[0]["detail"]);
+        Assert(list.Any(x => Convert.ToString(x["key"]) == "behavior:x"), "davranis bulgusu korunur");
+
+        // gec gelen 1116 tekrari islem bilgisini geri almaz
+        Assert(!alerts.Handle(d6, t0.AddMinutes(9).AddSeconds(30)), "1116 tekrari uyarmaz");
+        mine = FindingStore.Read(file).Where(x => Convert.ToString(x["key"]).StartsWith("defender:")).ToList();
+        Assert(mine.Count == 1 && ((string)mine[0]["detail"]).Contains("karantinaya aldı"), "1117 bilgisi korunur");
+
+        Assert(alerts.Handle(d7, t0.AddMinutes(11)), "10 dakika sonra yeniden uyarir");
+        Assert(sent.Count == 2, "ikinci uyari");
+
+        // farkli dosya: ayri anahtar, hemen uyarir
+        var other = DefenderFixture("defender-event-1117.xml");
+        other.Paths[0] = @"C:\Users\Ahmet\Desktop\baska.exe";
+        Assert(alerts.Handle(other, t0.AddMinutes(11)), "farkli oge uyarir");
+        Assert(FindingStore.Read(file).Count(x => Convert.ToString(x["key"]).StartsWith("defender:")) == 2, "iki Defender bulgusu");
+
+        // tepsi yoksa (gonderim false) bulgu yine yazilir, istisna yok
+        string dir2 = NewDataDir();
+        string file2 = Path.Combine(dir2, "findings.json");
+        var lonely = new DefenderAlerts(file2, (l, t, de, pa) => { throw new IOException("boru yok"); }, new GuardLog(Path.Combine(dir2, "guard.log")));
+        Assert(lonely.Handle(d7, t0), "gonderim hatasi dusurmez");
+        Assert(FindingStore.Read(file2).Count == 1, "tepsi yokken bulgu findings.json'da");
+        Assert(!lonely.Handle(null, t0), "null tespit");
+    }
+
+    [Test]
+    static void DefenderAlertLineFitsAndReachesClient()
+    {
+        string huge = new string('\u015f', 9000) + "<>&\"'" + new string('x', 9000);
+        byte[] line = GuardPipe.AlertLine("RED", "Virüs durduruldu: " + huge, huge, @"C:\" + huge);
+        Assert(line != null && line.Length <= 4096, "uyari satiri 4096 bayt sinirinda: " + (line == null ? -1 : line.Length));
+        string text = new UTF8Encoding(false).GetString(line);
+        Assert(text.EndsWith("\n") && text.IndexOf('\n') == text.Length - 1, "tek satir");
+        var obj = new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(text) as Dictionary<string, object>;
+        Assert(obj != null && (string)obj["type"] == "alert" && (string)obj["level"] == "RED" && ((string)obj["title"]).StartsWith("Virüs durduruldu: "), "gecerli JSON");
+
+        string name = "CortmedGuardTest-" + Guid.NewGuid().ToString("N");
+        using (var server = new GuardPipe(name, (id, d) => true))
+        {
+            server.Start();
+            Assert(!server.SendAlert("RED", "t", "d", "p"), "istemci yokken SendAlert false");
+            using (var client = new GuardClient(name))
+            {
+                Assert(WaitFor(() => client.Connected && server.HasClient, 12000), "baglanmali");
+                Assert(server.SendAlert("RED", "Virüs durduruldu: a.exe", "Cortmed ve Windows Defender bu dosyayı durdurdu.", @"C:\x\a.exe"), "bagliyken true");
+                string json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "alert istemci kuyruguna girmeli");
+                Assert(json.Contains("\"alert\"") && json.Contains("a.exe"), "alert satiri: " + json);
+                Assert(server.SendAlert("RED", huge, huge, huge), "buyuk uyari da gonderilir");
+                json = null;
+                Assert(WaitFor(() => client.TryDequeuePrompt(out json)), "buyuk alert ulasmali");
+                Assert(Encoding.UTF8.GetByteCount(json) < 4096, "buyuk alert sinirda");
+            }
+        }
+    }
+
     // ---- calistirici ----
 
     public static int Main(string[] args)
