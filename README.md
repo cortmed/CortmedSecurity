@@ -194,7 +194,7 @@ yolu kopyalayın (rehberdeki **Klasör yolunu kopyala** düğmesi tam yolu kopya
 **Edge:**
 1. Adres çubuğuna `edge://extensions` yazın.
 2. Sol alttaki **Geliştirici modu**'nu açın.
-3. **Paketten çıkarılmışı yükle**'ye basın.
+3. **Açılmışı yükle**'ye basın.
 4. Açılan pencerede üstteki adres çubuğuna kopyaladığınız yolu yapıştırın, Enter'a basın, sonra **Klasör seç** düğmesine basın.
 
 ### Edge Add-ons mağazası (sonraki, isteğe bağlı adım)

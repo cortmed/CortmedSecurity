@@ -451,7 +451,7 @@ try {
             Set-BrowserGuideBrowser $gf $b
             $gt = @(All-Controls $gf | ForEach-Object Text)
             $addr = if ($b -eq 'Chrome') { 'chrome://extensions' } else { 'edge://extensions' }
-            $s3 = if ($b -eq 'Chrome') { 'Paketlenmemiş öğe yükle düğmesine basın.' } else { 'Paketten çıkarılmışı yükle düğmesine basın.' }
+            $s3 = if ($b -eq 'Chrome') { 'Paketlenmemiş öğe yükle düğmesine basın.' } else { 'Açılmışı yükle düğmesine basın.' }
             $s2 = if ($b -eq 'Chrome') { 'Sağ üstteki Geliştirici modu düğmesini açın.' } else { 'Sol alttaki Geliştirici modu düğmesini açın.' }
             TCheck "rehber $b : adres" ($gt -contains $addr) ($gt -join '|')
             $s4 = 'Açılan pencerede üstteki adres çubuğuna kopyaladığınız yolu yapıştırın, Enter''a basın, sonra Klasör seç düğmesine basın.'

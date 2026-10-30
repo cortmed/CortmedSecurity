@@ -3421,8 +3421,10 @@ function Open-GuideBrowser($form) {
         [Windows.Forms.MessageBox]::Show("$b bu bilgisayarda bulunamadı. Tarayıcıyı kendiniz açıp adımlara devam edebilirsiniz.", 'Cortmed Security') | Out-Null
         return
     }
-    # chrome:// adresleri komut satirindan acilmaz; tarayici normal acilir, adresi kullanici yapistirir
-    try { Start-Process -FilePath $exe } catch { }
+    # Tarayici dogrudan eklentiler sayfasiyla acilir; panoya bir sonraki adimda lazim olan klasor yolu konur
+    $addr = if ($b -eq 'Edge') { 'edge://extensions' } else { 'chrome://extensions' }
+    try { [Windows.Forms.Clipboard]::SetText([string]$form.Tag.folder) } catch { }
+    try { Start-Process -FilePath $exe -ArgumentList $addr } catch { try { Start-Process -FilePath $exe } catch { } }
 }
 
 # Secilen tarayiciya gore 4 adimi yeniden cizer
@@ -3438,7 +3440,7 @@ function Set-BrowserGuideBrowser($f, [string]$b) {
     $edge = ($b -eq 'Edge')
     $addr = if ($edge) { 'edge://extensions' } else { 'chrome://extensions' }
     $s2 = if ($edge) { 'Sol alttaki Geliştirici modu düğmesini açın.' } else { 'Sağ üstteki Geliştirici modu düğmesini açın.' }
-    $s3 = if ($edge) { 'Paketten çıkarılmışı yükle düğmesine basın.' } else { 'Paketlenmemiş öğe yükle düğmesine basın.' }
+    $s3 = if ($edge) { 'Açılmışı yükle düğmesine basın.' } else { 'Paketlenmemiş öğe yükle düğmesine basın.' }
     $rows = @(@('1', 0), @('2', 86), @('3', 138), @('4', 190))
     foreach ($r in $rows) {
         $l = New-Object Windows.Forms.Label
@@ -3480,7 +3482,7 @@ function New-BrowserGuideForm([string]$browser = 'Chrome') {
     $steps = New-Object Windows.Forms.Panel
     $steps.Location = New-Object Drawing.Point(24, 144); $steps.Size = New-Object Drawing.Size(592, 330); $steps.BackColor = $UiBg
     $f.Controls.Add($steps)
-    $f.Controls.Add((New-Label 'Tarayıcı açılınca kopyaladığınız adresi adres çubuğuna yapıştırın.' 24 486 $UiMuted (New-Font 9.5) 590))
+    $f.Controls.Add((New-Label '"Tarayıcıyı aç" eklentiler sayfasını açar ve klasör yolunu kopyalar. Sayfa açılmazsa adresi kendiniz yazın.' 24 486 $UiMuted (New-Font 9.5) 590))
     $f.Controls.Add((New-Label 'Eklenti şifrelerinizi bilgisayarınızdan dışarı göndermez.' 24 514 $UiLevel.OK (New-Font 10 'Bold') 590))
     $btnOpen = New-FlatButton 'Tarayıcıyı aç' $true; $btnOpen.Location = New-Object Drawing.Point(24, 548)
     $btnClose = New-FlatButton 'Kapat' $false 'muted'; $btnClose.Location = New-Object Drawing.Point(190, 548)
