@@ -224,7 +224,9 @@ function Install-ClamAV {
             Invoke-WebRequest $ClamUrl -OutFile $zip -UseBasicParsing -TimeoutSec 1800
             $tmp = Join-Path $EnginesDir 'clamav-tmp'
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-            Expand-Archive $zip $tmp -Force
+            # Expand-Archive Turkce Windows'ta yerellestirme dosyasi bulamayip duruyor; .NET ile ac
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp)
             $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
             Remove-Item $ClamDir -Recurse -Force -ErrorAction SilentlyContinue
             Move-Item $inner.FullName $ClamDir

@@ -64,7 +64,8 @@ function Click-Button($win, [string]$name) {
 try {
     # 1) Paketi cikar ve kur
     $pkg = Join-Path $desk 'pkg'
-    Expand-Archive (Join-Path $kit 'CortmedSecurity-Windows.zip') $pkg -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $kit 'CortmedSecurity-Windows.zip'), $pkg)
     $inst = Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $pkg 'Install.ps1') `
         -RedirectStandardOutput (Join-Path $res 'install-out.txt') -RedirectStandardError (Join-Path $res 'install-err.txt') -PassThru
     if (-not $inst.WaitForExit(900000)) { Step 'kurulum bitti' $false 'zaman asimi (15 dk)'; $inst.Kill() } else { Step 'kurulum bitti' $true "kod $($inst.ExitCode)" }
