@@ -333,7 +333,7 @@ try {
     Write-Host '  CORTMED davranış bekçisi kuruluyor...' -ForegroundColor Cyan
     Set-Location $winDir
     # Modulleri PSModulePath yerine Windows PowerShell'in kendi klasorunden yukle
-    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Archive')
+    # (Archive modulu kullanilmaz: tr-TR gibi dillerde yerellestirme dosyasi bulunamayip kurulumu durduruyor)
     Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security')
 
     # 1) Klasorler ve ACL (hizmet baslamadan once)
@@ -392,7 +392,8 @@ try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
             $zip = Join-Path $tmp 'Sysmon.zip'
             Invoke-WebRequest $sysmonUrl -OutFile $zip -UseBasicParsing
-            Expand-Archive $zip $tmp -Force
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [IO.Compression.ZipFile]::ExtractToDirectory($zip, $tmp)
             $s64 = Join-Path $tmp 'Sysmon64.exe'
             if (-not (Test-Path $s64)) { throw 'İndirilen pakette Sysmon64.exe yok; Sysmon kurulmadı.' }
             $sig = Get-AuthenticodeSignature $s64
