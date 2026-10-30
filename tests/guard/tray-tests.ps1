@@ -275,6 +275,17 @@ try {
     [IO.File]::WriteAllText($fj, $finding2, (New-Object Text.UTF8Encoding($false)))
     [void](Invoke-GuardWarnNotices $wnotify)
     TCheck 'Warn bildirimi: yeni ikinci anahtar bir kez' ($wn.Count -eq 2 -and $wn[1] -like '*c.exe*') ($wn -join ' / ')
+    # Yeni Warn hemen gosterilmez (10 sn); ayni dosya icin soru penceresi acildiysa hic gosterilmez
+    $wtime = [DateTime]::UtcNow.ToString('o')
+    $finding3 = '[{"key":"behavior:' + ('d' * 64) + '","level":"YELLOW","title":"Şüpheli davranış: d.exe","detail":"x","path":"C:\\x\\d.exe","tab":"threat","report":"r","time":"' + $wtime + '"},' +
+        '{"key":"behavior:' + ('e' * 64) + '","level":"YELLOW","title":"Şüpheli davranış: e.exe","detail":"x","path":"C:\\x\\e.exe","tab":"threat","report":"r","time":"' + $wtime + '"}]'
+    [IO.File]::WriteAllText($fj, $finding3, (New-Object Text.UTF8Encoding($false)))
+    $before = $wn.Count
+    [void](Invoke-GuardWarnNotices $wnotify -PromptPaths @('C:\x\e.exe'))
+    TCheck 'Warn bildirimi: ilk 10 sn beklenir' ($wn.Count -eq $before) ($wn -join ' / ')
+    [void](Invoke-GuardWarnNotices $wnotify -PromptPaths @('C:\x\e.exe') -Now ((Get-Date).AddSeconds(15)))
+    TCheck 'Warn bildirimi: 10 sn sonra gosterilir' (($wn | Select-Object -Skip $before) -join ' ' -like '*d.exe*') ($wn -join ' / ')
+    TCheck 'Warn bildirimi: dondurulan (soru acilan) dosya icin yok' (-not ((($wn | Select-Object -Skip $before) -join ' ').Contains('e.exe'))) ($wn -join ' / ')
     [IO.File]::WriteAllText($fj, '[{"key": bozuk', (New-Object Text.UTF8Encoding($false)))
     $err = ''
     try { $sum = Get-StatusSummary } catch { $err = $_.Exception.Message }

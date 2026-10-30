@@ -1161,6 +1161,7 @@ function Get-GuardFindings($Now = $null) {
             if ([string]$i.key -like 'defender:*' -and $when -and ($Now - $when).TotalHours -lt 24) { $level = [string]$i.level; $tab = 'threat' }
             $f = New-Finding ([string]$i.key) $level ([string]$i.title) $detail ([string]$i.path)
             $f | Add-Member -NotePropertyName guardLevel -NotePropertyValue ([string]$i.level)
+            $f | Add-Member -NotePropertyName guardTime -NotePropertyValue $when
             $f | Add-Member -NotePropertyName tab -NotePropertyValue $tab
             $f | Add-Member -NotePropertyName report -NotePropertyValue ([string]$i.report)
             $f
@@ -1173,20 +1174,31 @@ function Get-GuardFindings($Now = $null) {
 # bu oturumda yine de bir kez gosterilir. $notify: { param($title, $text, $sticky) }. Donus: gosterilen sayisi.
 $GuardWarnShownPath = Join-Path $DataDir 'guard-warn-shown.txt'
 $script:GuardWarnShown = @{}
-function Invoke-GuardWarnNotices([scriptblock]$notify) {
+# Bekci bir programi once "supheli" (Warn) bulup saniyeler sonra dondurabilir. Yanlis "durdurulmadi" bildirimi
+# cikmasin: Warn bulgusu 10 sn bekletilir; ayni dosya icin soru penceresi ($PromptPaths) ya da kirmizi bulgu
+# varsa hic gosterilmez.
+function Invoke-GuardWarnNotices([scriptblock]$notify, [string[]]$PromptPaths = @(), $Now = $null, [int]$GraceSec = 10) {
+    if (-not $Now) { $Now = Get-Date }
     try {
         if ([IO.File]::Exists($GuardWarnShownPath)) {
             foreach ($l in [IO.File]::ReadAllLines($GuardWarnShownPath, [Text.Encoding]::UTF8)) { if ($l) { $script:GuardWarnShown[$l] = $true } }
         }
     } catch { }
     $n = 0
-    foreach ($f in @(Get-GuardFindings)) {
+    $all = @(Get-GuardFindings)
+    $stopped = @{}
+    foreach ($p in @($PromptPaths) + @($all | Where-Object { $_.guardLevel -eq 'RED' } | ForEach-Object { [string]$_.path })) {
+        if ($p) { $stopped[$p.ToLowerInvariant()] = $true }
+    }
+    foreach ($f in $all) {
         $key = [string]$f.key
         if ($f.guardLevel -ne 'YELLOW' -or $script:GuardWarnShown.ContainsKey($key)) { continue }
+        if ($f.guardTime -and ($Now - $f.guardTime).TotalSeconds -lt $GraceSec) { continue }   # sonraki turda bakilir
+        $silent = $f.path -and $stopped.ContainsKey(([string]$f.path).ToLowerInvariant())
         $script:GuardWarnShown[$key] = $true
         try { [IO.File]::AppendAllText($GuardWarnShownPath, "$key`r`n", (New-Object Text.UTF8Encoding($false))) } catch { }
         $name = if ($f.path) { Split-Path ([string]$f.path) -Leaf } else { [string]$f.title }
-        if ($notify) {
+        if ($notify -and -not $silent) {
             & $notify 'Cortmed Security' "Şüpheli davranış: $name. Program durdurulmadı; ayrıntılar Önerilerimiz > Şüpheli davranan programlar bölümünde." $false
         }
         $n++
@@ -1458,7 +1470,10 @@ function Start-Watcher {
             $state.ticks++
             # Bekcinin yeni supheli davranis (Warn) bulgulari: anahtar basina bir kisa bildirim
             if ($state.ticks % 5 -eq 0) {
-                try { [void](Invoke-GuardWarnNotices $guardNotify) } catch { Write-Log "Bekci uyari bildirimi hatasi: $_" }
+                try {
+                    $pp = @($guard.state.prompts.Values | ForEach-Object { try { [string](($_ | ConvertFrom-Json).path) } catch { } })
+                    [void](Invoke-GuardWarnNotices $guardNotify -PromptPaths $pp)
+                } catch { Write-Log "Bekci uyari bildirimi hatasi: $_" }
             }
             if ($state.ticks % 30 -eq 0) { & $updateTray }
             if (((Get-Date) - $state.lastDaily).TotalHours -ge 24) {
