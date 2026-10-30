@@ -247,6 +247,36 @@
     $('pinBtn').click();
     assertEq('9 digits still checked', pwCount(), before + 1);
 
+    // Yesil kart: tam metin, yesil vurgu, 8 sn'de kapanir; checked:false ya da safe yoksa kart yok
+    await tick(); await tick();
+    cards().forEach(function (c) { c.remove(); });
+    window.__replies.pwSubmit = { reuse: [], leaked: 0, checked: true, safe: true };
+    type(pw, fresh());
+    loginBtn.click();
+    await tick(); await tick();
+    const sc = cards('safe');
+    assertEq('safe card shown', sc.length, 1);
+    const stxt = sc[0] ? sc[0].querySelector('p.text').textContent : '';
+    assertEq('safe card text', stxt, '✓ Bu şifre bilinen sızıntılarda görünmüyor.Yine de her sitede farklı şifre kullanmanız en güvenlisi.');
+    assertEq('safe card two lines', sc[0] ? sc[0].querySelectorAll('p.text br').length : -1, 1);
+    assertEq('safe card accent css', shadowRoot().textContent.indexOf('.card.safe{border-left-color:#66BB6A}') >= 0, true);
+    assertEq('safe card only', cards().map(function (c) { return c.getAttribute('data-kind'); }), ['safe']);
+    const t8 = window.__timers.filter(function (t) { return t.ms === 8000; });
+    assertEq('safe auto close 8s timer', t8.length, 1);
+    t8.forEach(function (t) { try { t.fn(); } catch (e) { } });
+    assertEq('safe auto close removes card', cards().length, 0);
+    window.__replies.pwSubmit = { reuse: [], leaked: 0, checked: false, safe: false };
+    type(pw, fresh());
+    loginBtn.click();
+    await tick(); await tick();
+    assertEq('no card when check failed', cards().length, 0);
+    window.__replies.pwSubmit = { reuse: [], leaked: 0, checked: false, safe: true };
+    type(pw, fresh());
+    loginBtn.click();
+    await tick(); await tick();
+    assertEq('no card when checked false even if safe', cards().length, 0);
+    window.__replies.pwSubmit = { reuse: ['a.com', 'b.com'], leaked: 1234567 };
+
     // Sayfa dunyasindan kapi yalnizca 127.0.0.1'de anlam tasir (ayni betik, kosul kodda)
     assertEq('fixture served from 127.0.0.1', location.hostname, '127.0.0.1');
     assertEq('content.js loaded before body existed', window.__bodyAtStart, false);

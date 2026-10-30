@@ -127,6 +127,7 @@
   const HIBP_URL = 'https://api.pwnedpasswords.com/range/';
   const HIBP_TIMEOUT_MS = 5000;
   const HIBP_CACHE_MAX = 300;
+  const SAFE_SHOWN_MAX = 300;   // yesil kart: gosterilen (iz, site) cifti sayisi ust siniri
   const RATE_MAX = 5;
   const RATE_WINDOW = 10 * 60 * 1000;
   const PENDING_MS = 60000;
@@ -200,6 +201,17 @@
   const DIGITS_RX = /^\d{1,8}$/;
   function skipSecret(password) { return DIGITS_RX.test(password); }
 
+  // Yesil "guvenli" kart: ayni (iz, site) ciftine en fazla bir kez. Saf islev: list = onceki cift anahtarlari (eskiden yeniye).
+  // Doner: {show, list}; show true ise cift listenin sonuna eklenir, en fazla max kayit tutulur (en eskiler atilir).
+  function safeCardDecision(list, fp, site, max) {
+    const cap = typeof max === 'number' && max > 0 ? max : SAFE_SHOWN_MAX;
+    const cur = Array.isArray(list) ? list.filter(function (x) { return typeof x === 'string'; }) : [];
+    const key = String(fp) + '|' + String(site);
+    if (cur.indexOf(key) >= 0) return { show: false, list: cur.slice(-cap) };
+    cur.push(key);
+    return { show: true, list: cur.slice(-cap) };
+  }
+
   // msg: {site, password}. Sifre yalnizca burada, iz ve SHA-1 icin kullanilir; hicbir yere yazilmaz.
   // deps.serial: depo oku-degistir-yaz adimlarini siraya koyar. Ozet ve HIBP sorgusu sira disinda calisir.
   async function handlePwSubmit(msg, deps) {
@@ -219,11 +231,13 @@
     const known = freshEntry(cached, deps.now()) ? cached.n : null;
 
     // Ayni-sifre sonucu once yazilir ve bildirilir (deps.onEarly); HIBP sonra sorulur.
+    let hadReuse = false;
     const early = await run(async function () {
       const st = await deps.store.get(['pwIndex', 'noReuseWarn']);
       const rec = recordUse(st.pwIndex || {}, fp, site);
       await deps.store.set({ pwIndex: rec.index });
       const muted = (st.noReuseWarn || {})[site];
+      hadReuse = rec.otherSites.length > 0;
       return { reuse: muted ? [] : rec.otherSites, leaked: known || 0 };
     });
     if (deps.onEarly) await deps.onEarly(early);
@@ -238,8 +252,15 @@
       if (fresh !== null) all[fp] = { n: fresh, t: now };
       const cache = pruneCache(all, now);
       const leaked = cache[fp] ? cache[fp].n : 0;
+      const checked = !!cache[fp]; // HIBP gercekten cevap verdi (ya da taze onbellek var)
       await deps.store.set({ hibpCache: cache });
-      return { reuse: early.reuse, leaked: leaked };
+      let safe = false;
+      if (checked && leaked === 0 && !hadReuse) {
+        const ss = await deps.store.get(['safeShown']);
+        const dec = safeCardDecision(ss.safeShown, fp, site, SAFE_SHOWN_MAX);
+        if (dec.show) { await deps.store.set({ safeShown: dec.list }); safe = true; }
+      }
+      return { reuse: early.reuse, leaked: leaked, checked: checked, safe: safe };
     });
   }
 
@@ -404,7 +425,13 @@
       });
     }
 
-    function hasCards(r) { return !!r && (r.leaked > 0 || r.reuse.length > 0); }
+    function hasCards(r) { return !!r && (r.leaked > 0 || r.reuse.length > 0 || r.safe === true); }
+    // Bekleyen kartta yalnizca kart icin gereken alanlar tutulur.
+    function cardResult(r) {
+      const o = { reuse: r.reuse, leaked: r.leaked };
+      if (r.safe === true) o.safe = true;
+      return o;
+    }
 
     switch (msg.type) {
       case 'pwSubmit': {
@@ -432,10 +459,10 @@
           await pendingUpdate(function (p) {
             const cur = p[tabId];
             if (cur && cur.id === id) {
-              if (hasCards(r)) { cur.result = r; cur.t = deps.now(); } else delete p[tabId];
+              if (hasCards(r)) { cur.result = cardResult(r); cur.t = deps.now(); } else delete p[tabId];
             } else if (!cur) {
               // Erken kart alindiysa yalnizca sonradan gelen sizinti eklenir.
-              if (!hasCards(early)) { if (hasCards(r)) p[tabId] = { id: id, site: cardSite, result: r, t: deps.now() }; }
+              if (!hasCards(early)) { if (hasCards(r)) p[tabId] = { id: id, site: cardSite, result: cardResult(r), t: deps.now() }; }
               else if (r.leaked > 0 && !(early.leaked > 0)) p[tabId] = { id: id, site: cardSite, result: { reuse: [], leaked: r.leaked }, t: deps.now() };
             }
           });
@@ -493,7 +520,7 @@
   root.CortmedLib = {
     etld1: etld1, fingerprint: fingerprint, sha1Hex: sha1Hex, recordUse: recordUse,
     mfaState: mfaState, isScannable: isScannable, parseRange: parseRange,
-    handlePwSubmit: handlePwSubmit, handleReuseMute: handleReuseMute, findMfaSite: findMfaSite,
+    handlePwSubmit: handlePwSubmit, safeCardDecision: safeCardDecision, handleReuseMute: handleReuseMute, findMfaSite: findMfaSite,
     handleMfaCheck: handleMfaCheck, handleMfaAnswer: handleMfaAnswer, mfaLabel: mfaLabel,
     downloadNotice: downloadNotice, downloadOutcome: downloadOutcome,
     senderHost: senderHost, routeMessage: routeMessage, skipSecret: skipSecret, canonicalSite: canonicalSite

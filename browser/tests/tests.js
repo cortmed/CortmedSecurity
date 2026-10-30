@@ -138,7 +138,7 @@ async function backgroundLogic(L, assertEq) {
   let ff = fakeFetch(miss);
   const deps = { store: st, fetch: ff, now: function () { return T; } };
   let r = await L.handlePwSubmit({ site: 'discord.com', password: 'Kedi-Parola-77' }, deps);
-  assertEq('pw first', r, { reuse: [], leaked: 0 });
+  assertEq('pw first', r, { reuse: [], leaked: 0, checked: true, safe: true });
   assertEq('pw salt made', /^[0-9a-f]{32}$/.test(st.data.salt || ''), true);
   const salt1 = st.data.salt;
   r = await L.handlePwSubmit({ site: 'store.steampowered.com', password: 'Kedi-Parola-77' }, deps);
@@ -173,6 +173,54 @@ async function backgroundLogic(L, assertEq) {
   st = fakeStore(); ff = fakeFetch('oops', { status: 503 });
   r = await L.handlePwSubmit({ site: 'example.com', password: 'password' }, { store: st, fetch: ff, now: function () { return T; } });
   assertEq('pw http error leaked 0', r.leaked, 0);
+
+
+  // Yesil "guvenli" kart: sizmamis + kontrol basarili + yeniden kullanim yok; ayni (iz, site) icin yalnizca ilk seferde
+  st = fakeStore(); ff = fakeFetch(miss);
+  const dsf = { store: st, fetch: ff, now: function () { return T; } };
+  r = await L.handlePwSubmit({ site: 'www.safe.com', password: 'Temiz-Parola-9' }, dsf);
+  assertEq('safe first', [r.safe, r.checked, r.leaked, r.reuse], [true, true, 0, []]);
+  r = await L.handlePwSubmit({ site: 'login.safe.com', password: 'Temiz-Parola-9' }, dsf);
+  assertEq('safe second same fp+site', [r.safe, r.checked], [false, true]);
+  assertEq('safe shown stored, no password', [Array.isArray(st.data.safeShown), st.data.safeShown.length, JSON.stringify(st.data).indexOf('Temiz-Parola-9')], [true, 1, -1]);
+  r = await L.handlePwSubmit({ site: 'safe.com', password: 'Temiz-Parola-10' }, dsf);
+  assertEq('safe other fp same site', r.safe, true);
+  // Ag hatasi: checked false, safe yok, kayit yok
+  st = fakeStore(); ff = fakeFetch('', { fail: true });
+  r = await L.handlePwSubmit({ site: 'safe.com', password: 'Temiz-Parola-9' }, { store: st, fetch: ff, now: function () { return T; } });
+  assertEq('safe net error', [r.safe, r.checked, st.data.safeShown], [false, false, undefined]);
+  st = fakeStore(); ff = fakeFetch('oops', { status: 503 });
+  r = await L.handlePwSubmit({ site: 'safe.com', password: 'Temiz-Parola-9' }, { store: st, fetch: ff, now: function () { return T; } });
+  assertEq('safe http error', [r.safe, r.checked], [false, false]);
+  // Sizmis: safe yok
+  st = fakeStore(); ff = fakeFetch(PWSFX + ':9\r\n');
+  r = await L.handlePwSubmit({ site: 'safe.com', password: 'password' }, { store: st, fetch: ff, now: function () { return T; } });
+  assertEq('safe leaked', [r.safe, r.checked, r.leaked, st.data.safeShown], [false, true, 9, undefined]);
+  // Yeniden kullanim: safe yok (susturulmus sitede de)
+  st = fakeStore(); ff = fakeFetch(miss);
+  const dsr = { store: st, fetch: ff, now: function () { return T; } };
+  await L.handlePwSubmit({ site: 'a.com', password: 'Temiz-Parola-9' }, dsr);
+  r = await L.handlePwSubmit({ site: 'b.com', password: 'Temiz-Parola-9' }, dsr);
+  assertEq('safe reuse', [r.safe, r.reuse], [false, ['a.com']]);
+  await L.handleReuseMute({ site: 'c.com' }, dsr);
+  r = await L.handlePwSubmit({ site: 'c.com', password: 'Temiz-Parola-9' }, dsr);
+  assertEq('safe reuse muted site no green', [r.safe, r.reuse], [false, []]);
+  // Saf islev: tekrar yok, 300 siniri, en eski atilir
+  let sd = L.safeCardDecision(undefined, 'f1', 's.com', 300);
+  assertEq('safeCardDecision first', [sd.show, sd.list], [true, ['f1|s.com']]);
+  sd = L.safeCardDecision(sd.list, 'f1', 's.com', 300);
+  assertEq('safeCardDecision repeat', sd.show, false);
+  sd = L.safeCardDecision(sd.list, 'f1', 't.com', 300);
+  assertEq('safeCardDecision other site', sd.show, true);
+  let safeBig = [];
+  for (let i = 0; i < 300; i++) safeBig.push('x' + i + '|s.com');
+  sd = L.safeCardDecision(safeBig, 'new', 's.com', 300);
+  assertEq('safeCardDecision cap evicts oldest', [sd.show, sd.list.length, sd.list[0], sd.list[299]], [true, 300, 'x1|s.com', 'new|s.com']);
+  assertEq('safeCardDecision evicted shows again', L.safeCardDecision(sd.list, 'x0', 's.com', 300).show, true);
+  // Sizdirmayan sifre depoya yazilirken sinir
+  st = fakeStore({ safeShown: safeBig }); ff = fakeFetch(miss);
+  r = await L.handlePwSubmit({ site: 's.com', password: 'Yeni-Temiz-1' }, { store: st, fetch: ff, now: function () { return T; } });
+  assertEq('safe store capped', [r.safe, st.data.safeShown.length, st.data.safeShown[0]], [true, 300, 'x1|s.com']);
 
   // Boş şifre: hiçbir şey yapılmaz
   st = fakeStore(); ff = fakeFetch(miss);
@@ -430,8 +478,17 @@ async function routerTests(L, assertEq, sites, miss, PWSFX) {
   // Site mesajdan degil sender.url'den alinir
   let d = mk();
   let r = await L.routeMessage({ type: 'pwSubmit', site: 'bank.com', password: 'Yonlendirici-1' }, snd('https://login.evil.com/x'), d);
-  assertEq('route pw reply', r, { reuse: [], leaked: 0 });
+  assertEq('route pw reply', r, { reuse: [], leaked: 0, checked: true, safe: true });
   assertEq('route site from sender.url', JSON.stringify(d.store.data.pwIndex).indexOf('evil.com') >= 0 && JSON.stringify(d.store.data.pwIndex).indexOf('bank.com') < 0, true);
+
+  // Yesil kart bekleyen kartlara da girer (yonlendirme sonrasi); alininca silinir, tekrar yok
+  assertEq('route safe pending', await L.routeMessage({ type: 'pendingCards' }, snd('https://app.evil.com/'), d), { reuse: [], leaked: 0, safe: true });
+  assertEq('route safe pending taken once', await L.routeMessage({ type: 'pendingCards' }, snd('https://app.evil.com/'), d), null);
+  r = await L.routeMessage({ type: 'pwSubmit', password: 'Yonlendirici-1' }, snd('https://login.evil.com/x'), d);
+  assertEq('route safe not repeated', [r.safe, await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/'), d)], [false, null]);
+  d = mk(); d.fetch = fakeFetch('', { fail: true });
+  r = await L.routeMessage({ type: 'pwSubmit', password: 'Yonlendirici-2' }, snd('https://evil.com/'), d);
+  assertEq('route net error no safe, no pending', [r.safe, r.checked, await L.routeMessage({ type: 'pendingCards' }, snd('https://evil.com/'), d)], [false, false, null]);
 
   // Alt cerceve, yabanci kimlik, http disi, eksik url: hicbir sey yapilmaz
   d = mk();

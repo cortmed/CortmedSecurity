@@ -12,6 +12,7 @@
   const CONTROL = 'button, input[type="submit"], input[type="button"], input[type="image"], [role="button"]';
   const DEDUPE_MS = 2000;
   const CARD_MS = 30000;
+  const SAFE_CARD_MS = 8000;
 
   function send(msg, cb) {
     try {
@@ -30,10 +31,11 @@
     'border-left:6px solid #29B6F6;border-radius:12px;padding:14px 16px;box-shadow:0 8px 28px rgba(0,0,0,.45);font-size:15px;line-height:1.45}',
     '.card.leak{border-left-color:#EF5350}',
     '.card.reuse{border-left-color:#FFB300}',
+    '.card.safe{border-left-color:#66BB6A}',
     '.card.mfa{border-left-color:#29B6F6}',
     '.brand{font-size:12px;color:#93A4BD;margin:0 0 6px;letter-spacing:.02em}',
     '.brand .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#29B6F6}',
-    '.leak .brand .dot{background:#EF5350}.reuse .brand .dot{background:#FFB300}',
+    '.leak .brand .dot{background:#EF5350}.reuse .brand .dot{background:#FFB300}.safe .brand .dot{background:#66BB6A}',
     'p.text{margin:0 0 12px}',
     'b{color:#FFFFFF;font-weight:700}',
     '.btns{display:flex;flex-wrap:wrap;gap:8px}',
@@ -42,6 +44,7 @@
     'button.primary{background:#29B6F6;color:#0B1526;border-color:#29B6F6;font-weight:600}',
     '.leak button.primary{background:#EF5350;border-color:#EF5350;color:#FFFFFF}',
     '.reuse button.primary{background:#FFB300;border-color:#FFB300;color:#0B1526}',
+    '.safe button.primary{background:#66BB6A;border-color:#66BB6A;color:#0B1526}',
     'button:focus-visible{outline:2px solid #F1F5FB;outline-offset:2px}',
     'button:hover{filter:brightness(1.1)}'
   ].join('');
@@ -72,6 +75,7 @@
     p.className = 'text';
     parts.forEach(function (x) {
       if (typeof x === 'string') p.appendChild(document.createTextNode(x));
+      else if (x.br) p.appendChild(document.createElement('br'));
       else { const b = document.createElement('b'); b.textContent = x.b; p.appendChild(b); }
     });
     return p;
@@ -80,7 +84,7 @@
   // buttons: [{label, act, primary, onClick, keep}]
   // Ayni turden yeni kart eskisinin yerini alir (her turden en fazla bir kart).
   const openCards = {};
-  function showCard(kind, parts, buttons) {
+  function showCard(kind, parts, buttons, ms) {
     const s = ensureStack();
     if (openCards[kind]) openCards[kind]();
     const card = document.createElement('div');
@@ -121,7 +125,7 @@
     card.appendChild(row);
     // Kirmizi kart her zaman en ustte
     if (kind === 'leak') s.insertBefore(card, s.firstChild); else s.appendChild(card);
-    setTimeout(close, CARD_MS);
+    setTimeout(close, ms || CARD_MS);
     return card;
   }
 
@@ -134,6 +138,13 @@
     showCard('leak', fromParts(from).concat([
       'Bu şifre daha önce internete sızmış (', { b: Number(count).toLocaleString('tr-TR') }, ' kez görülmüş). Hemen değiştirin.'
     ]), [{ label: 'Tamam', act: 'close', primary: true }]);
+  }
+
+  function showSafe(from) {
+    showCard('safe', fromParts(from).concat([
+      '✓ Bu şifre bilinen sızıntılarda görünmüyor.', { br: true },
+      'Yine de her sitede farklı şifre kullanmanız en güvenlisi.'
+    ]), [{ label: 'Tamam', act: 'close', primary: true }], SAFE_CARD_MS);
   }
 
   function showReuse(sites, from) {
@@ -160,9 +171,12 @@
     const from = typeof r.from === 'string' && r.from ? r.from.slice(0, 100) : null;
     if (leaked > 0) showLeaked(leaked, from);
     if (reuse.length) showReuse(reuse, from);
+    // Yesil kart yalnizca arka plan kontrolun basarili oldugunu ve sizinti/yeniden kullanim olmadigini bildirdiyse.
+    const safe = r.safe === true && r.checked !== false && leaked === 0 && !reuse.length;
+    if (safe) showSafe(from);
     // Form gonderiminde eski sayfa birazdan kapanir; kart gercekten goruldukten sonra bildir,
     // kapanirsa zamanlayici calismaz ve kart yeni sayfada yeniden gosterilir.
-    if (leaked > 0 || reuse.length) setTimeout(function () { send({ type: 'cardsShown' }); }, CARDS_SHOWN_DELAY_MS);
+    if (leaked > 0 || reuse.length || safe) setTimeout(function () { send({ type: 'cardsShown' }); }, CARDS_SHOWN_DELAY_MS);
   }
 
   // ---------- Giris denemesi algilama ----------
