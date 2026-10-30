@@ -2742,9 +2742,9 @@ function Build-SettingsAbout($ctx, $p) {
         else { $ver = 'Sürüm tarihi: {0:dd.MM.yyyy}' -f (Get-Item -LiteralPath (Join-Path $Root 'CortmedSecurity.ps1')).LastWriteTime }
     } catch { }
     $p.Controls.Add((New-Label $ver 146 160 $UiMuted (New-Font 10)))
-    $p.Controls.Add((New-Label 'Ailenizin bilgisayarını arka planda koruyan, ücretsiz ve sade bir güvenlik aracı.' 146 190 $UiText (New-Font 10) 460))
+    $p.Controls.Add((New-Label 'Bilgisayarınızı arka planda kesintisiz izleyen güvenlik ajanı. Dosyaları içeriğine kadar tarar, programların ne yaptığını izler; şüpheli bir hareket gördüğü an durdurur ve kararı size bırakır.' 146 190 $UiText (New-Font 10) 460))
     $link = New-Object Windows.Forms.LinkLabel
-    $link.Text = $AboutUrl; $link.AutoSize = $true; $link.Location = New-Object Drawing.Point(146, 242)
+    $link.Text = $AboutUrl; $link.AutoSize = $true; $link.Location = New-Object Drawing.Point(146, 272)
     $link.LinkColor = $UiAccent; $link.ActiveLinkColor = $UiText; $link.Font = New-Font 10
     $link.Add_LinkClicked({ Start-Process 'https://github.com/cortmed/CortmedSecurity' })
     $p.Controls.Add($link)
