@@ -2699,7 +2699,6 @@ function Invoke-GuardTick($state, $client, [datetime]$now, [scriptblock]$answer,
 
 $SettingsPageNames = @('Koruma', 'Davranış bekçisi', 'Veritabanı', 'Güvenilir dosyalar', 'Karantina', 'Gelişmiş', 'Hakkında')
 $SettingsCardW = 610
-$AboutUrl = 'https://github.com/cortmed/CortmedSecurity'
 
 # Ek tarama motoru (ClamAV) kurulumunu arka planda baslatir
 function Start-ClamInstall {
@@ -3190,14 +3189,9 @@ function Build-SettingsAbout($ctx, $p) {
     } catch { }
     $p.Controls.Add((New-Label $ver 146 160 $UiMuted (New-Font 10)))
     $p.Controls.Add((New-Label 'Bilgisayarınızı arka planda kesintisiz izleyen güvenlik ajanı. Dosyaları içeriğine kadar tarar, programların ne yaptığını izler; şüpheli bir hareket gördüğü an durdurur ve kararı size bırakır.' 146 190 $UiText (New-Font 10) 460))
-    $link = New-Object Windows.Forms.LinkLabel
-    $link.Text = $AboutUrl; $link.AutoSize = $true; $link.Location = New-Object Drawing.Point(146, 272)
-    $link.LinkColor = $UiAccent; $link.ActiveLinkColor = $UiText; $link.Font = New-Font 10
-    $link.Add_LinkClicked({ Start-Process 'https://github.com/cortmed/CortmedSecurity' })
-    $p.Controls.Add($link)
-    $p.Controls.Add((New-Label 'Cortmed tarafından geliştirilmiştir.' 146 308 $UiText (New-Font 11 'Bold')))
-    $p.Controls.Add((New-Label ('© {0} Cortmed. Tüm hakları saklıdır. İzinsiz çoğaltılması ve dağıtılması yasaktır.' -f (Get-Date).Year) 146 334 $UiText (New-Font 9.5) 460))
-    $p.Controls.Add((New-Label 'Açık kaynak bileşenler: YARA (VirusTotal, BSD-3), YARA-Forge kuralları. Veri kaynakları: MalwareBazaar, VirusShare, Have I Been Pwned. Microsoft Sysmon ve Defender ayrıca kullanılır.' 146 380 $UiMuted (New-Font 9) 460))
+    $p.Controls.Add((New-Label 'Cortmed tarafından geliştirilmiştir.' 146 280 $UiText (New-Font 11 'Bold')))
+    $p.Controls.Add((New-Label ('© {0} Cortmed. Tüm hakları saklıdır. İzinsiz çoğaltılması ve dağıtılması yasaktır.' -f (Get-Date).Year) 146 306 $UiText (New-Font 9.5) 460))
+    $p.Controls.Add((New-Label 'Açık kaynak bileşenler: YARA (VirusTotal, BSD-3), YARA-Forge kuralları. Veri kaynakları: MalwareBazaar, VirusShare, Have I Been Pwned. Microsoft Sysmon ve Defender ayrıca kullanılır.' 146 352 $UiMuted (New-Font 9) 460))
 }
 
 function Select-SettingsPage($ctx, [string]$name) {
