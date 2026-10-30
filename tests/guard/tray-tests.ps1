@@ -547,6 +547,22 @@ try {
     # Ayrintilarda gezinme tarifi kalmadi: metinler dugmeye yonlendirir
     $src = [IO.File]::ReadAllText((Join-Path $RepoRoot 'windows\CortmedSecurity.ps1'), [Text.Encoding]::UTF8)
     TCheck 'metin: Baslat menusunden / Denetim Masasi tarifi kalmadi' ($src -notmatch 'Başlat menüsünden "Windows|Denetim Masası >|Görev Yöneticisi > Başlangıç') ''
+
+    # Zip icinde imza arama: gercek EICAR diske yazilmaz (bu bilgisayarin antivirusu siler); zararsiz bir isaretle denenir
+    TCheck 'EICAR imzasi betikte birlesik metin olarak gecmez' ($src -notmatch 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE') ''
+    TCheck 'Test-BytesContain bulur' (Test-BytesContain ([byte[]](1, 2, 3, 4, 5)) ([byte[]](3, 4))) ''
+    TCheck 'Test-BytesContain yoksa false' (-not (Test-BytesContain ([byte[]](1, 2, 3)) ([byte[]](3, 4)))) ''
+    $realEicar = $EicarBytes
+    $EicarBytes = [Text.Encoding]::ASCII.GetBytes('CORTMED-ZARARSIZ-DENEME-ISARETI-7731')
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $zd = Join-Path $work 'zipdeneme'; New-Item -ItemType Directory -Force $zd | Out-Null
+    [IO.File]::WriteAllText((Join-Path $zd 'ic.com'), 'onek CORTMED-ZARARSIZ-DENEME-ISARETI-7731 sonek')
+    $zp = Join-Path $work 'deneme.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($zd, $zp)
+    TCheck 'zip icindeki imza bulunur' ((Get-InnerThreatFamily $zp) -eq 'EICAR-Test-File') ''
+    [IO.File]::WriteAllText((Join-Path $work 'temiz.txt'), 'merhaba')
+    TCheck 'temiz dosyada imza yok' ($null -eq (Get-InnerThreatFamily (Join-Path $work 'temiz.txt'))) ''
+    $EicarBytes = $realEicar
 } catch {
     TCheck 'tepsi testleri calisti' $false $_.Exception.Message
 } finally {

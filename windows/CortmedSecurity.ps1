@@ -534,6 +534,52 @@ function Get-RiskAssessment([string]$file, $family, $vt, $sig, $eng, [bool]$from
   ve VirusTotal, imza, kaynak, ad hileleri), sonra Cortmed risk puanina gore karar verir.
   Temizse $null (ya da -AlwaysReport ile "OK" raporu) dondurur.
 #>
+# Standart antivirus test imzasi (EICAR). Parcalar calisma aninda birlestirilir; boylece bu betik dosyasinin
+# kendisi baska antivirus programlarinca "test dosyasi" sanilmaz.
+$EicarBytes = [Text.Encoding]::ASCII.GetBytes(('X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS' + '-TEST-FILE!$H+H*'))
+
+function Test-BytesContain([byte[]]$data, [byte[]]$needle) {
+    if (-not $data -or $data.Length -lt $needle.Length) { return $false }
+    $first = $needle[0]
+    for ($i = 0; $i -le $data.Length - $needle.Length; $i++) {
+        if ($data[$i] -ne $first) { continue }
+        $j = 1
+        while ($j -lt $needle.Length -and $data[$i + $j] -eq $needle[$j]) { $j++ }
+        if ($j -eq $needle.Length) { return $true }
+    }
+    return $false
+}
+
+# Dosyanin (zip ise icindeki kucuk dosyalarin) bilinen bir zararliyla eslesmesi: EICAR test imzasi ya da
+# veritabanindaki parmak izi. Bulunursa aile adini, yoksa $null dondurur. Boyut ve sayi sinirli; hata sessiz.
+function Get-InnerThreatFamily([string]$file) {
+    try {
+        $fi = Get-Item -LiteralPath $file
+        if ($fi.Length -le 1MB -and (Test-BytesContain ([IO.File]::ReadAllBytes($file)) $EicarBytes)) { return 'EICAR-Test-File' }
+        if ([IO.Path]::GetExtension($file).ToLowerInvariant() -ne '.zip' -or $fi.Length -gt 200MB) { return $null }
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $zip = [IO.Compression.ZipFile]::OpenRead($file)
+        try {
+            $n = 0
+            foreach ($e in $zip.Entries) {
+                if (++$n -gt 200) { break }
+                if ($e.Length -le 0 -or $e.Length -gt 50MB) { continue }
+                $ms = New-Object IO.MemoryStream
+                $s = $e.Open(); try { $s.CopyTo($ms) } finally { $s.Dispose() }
+                $bytes = $ms.ToArray(); $ms.Dispose()
+                if ($bytes.Length -le 1MB -and (Test-BytesContain $bytes $EicarBytes)) { return 'EICAR-Test-File' }
+                if ($script:Db) {
+                    $sha = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+                    $md5 = -join ([Security.Cryptography.MD5]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+                    $fam = $script:Db.LookupHex($sha, $md5)
+                    if ($fam) { return "$fam (arşivin içinde: $($e.FullName))" }
+                }
+            }
+        } finally { $zip.Dispose() }
+    } catch { }
+    return $null
+}
+
 function Test-FileThreat([string]$file, [switch]$UseVirusTotal, [switch]$SkipClam, [switch]$AlwaysReport) {
     $ext = [IO.Path]::GetExtension($file).ToLowerInvariant()
     $name = [IO.Path]::GetFileName($file)
@@ -541,6 +587,7 @@ function Test-FileThreat([string]$file, [switch]$UseVirusTotal, [switch]$SkipCla
     $trusted = $h[0] -in @((Get-Config).trustedHashes)
     if ($trusted -and -not $AlwaysReport) { return $null }
     $family = $script:Db.LookupHex($h[0], $h[1])
+    if ($null -eq $family) { $family = Get-InnerThreatFamily $file }
     $isProgram = $ext -in $ProgramExtensions
     $fromNet = Test-FromInternet $file
     $eng = Get-ContentScan $file -SkipClam:$SkipClam
