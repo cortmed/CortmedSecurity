@@ -138,6 +138,41 @@ try {
     & (Join-Path $dl 'CortmedBehaviorTest.exe') --cleanup | Out-Null
 
 
+    # 6) Kendi motorumuz: zip icindeki EICAR test dosyasi (Sandbox'ta Defender kapali; yakalayan Cortmed olmali)
+    #    Imza parcalardan birlestirilir; bu betik dosyasinin kendisi test dosyasi sanilmasin.
+    try {
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $eic = 'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS' + '-TEST-FILE!$H+H*'
+        $zd = Join-Path $env:TEMP ('eic-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $zd | Out-Null
+        [IO.File]::WriteAllText((Join-Path $zd 'eicar.com'), $eic)
+        $ez = Join-Path $dl 'eicar_com.zip'
+        if (Test-Path $ez) { Remove-Item $ez -Force }
+        [IO.Compression.ZipFile]::CreateFromDirectory($zd, $ez)
+        $js = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $appPs -Mode ScanFile -Json -Path $ez 2>&1 | Select-Object -Last 1
+        Set-Content (Join-Path $res 'eicar-scan.txt') $js -Encoding UTF8
+        Step 'Cortmed zip icindeki EICAR dosyasini yakaladi' ("$js" -match '"level":"RED"') "$js"
+        # Tarayici koprusu ayni dosya icin RED dondurmeli (eklentinin indirme kontrolu yolu)
+        $hostExe = Join-Path $env:LOCALAPPDATA 'CortmedSecurity\CortmedBrowserHost.exe'
+        if (Test-Path $hostExe) {
+            $psi = New-Object Diagnostics.ProcessStartInfo $hostExe
+            $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true
+            $hp = [Diagnostics.Process]::Start($psi)
+            $body = [Text.Encoding]::UTF8.GetBytes((@{ path = $ez } | ConvertTo-Json -Compress))
+            $in = $hp.StandardInput.BaseStream
+            $in.Write([BitConverter]::GetBytes([int]$body.Length), 0, 4); $in.Write($body, 0, $body.Length); $in.Flush(); $in.Close()
+            $out = $hp.StandardOutput.BaseStream
+            $lenB = New-Object byte[] 4; [void]$out.Read($lenB, 0, 4)
+            $len = [BitConverter]::ToInt32($lenB, 0)
+            $buf = New-Object byte[] $len; $got = 0
+            while ($got -lt $len) { $n = $out.Read($buf, $got, $len - $got); if ($n -le 0) { break }; $got += $n }
+            [void]$hp.WaitForExit(150000)
+            $reply = [Text.Encoding]::UTF8.GetString($buf, 0, $got)
+            Set-Content (Join-Path $res 'host-reply.txt') $reply -Encoding UTF8
+            Step 'tarayici koprusu EICAR icin RED dondu' ($reply -match '"level":"RED"') $reply
+        } else { Step 'tarayici koprusu kurulu' $false $hostExe }
+        Remove-Item $zd -Recurse -Force -ErrorAction SilentlyContinue
+    } catch { Step 'EICAR denemesi' $false "$_" }
+
     # 7) Kaldirma
     $un = Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $env:LOCALAPPDATA 'CortmedSecurity\Uninstall.ps1') `
         -RedirectStandardOutput (Join-Path $res 'uninstall-out.txt') -PassThru
