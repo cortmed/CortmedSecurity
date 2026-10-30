@@ -215,8 +215,12 @@ function DirState { ($guardDirs | ForEach-Object { if (Test-Path $_) { "$_=" + @
 $before = DirState
 function RunWhatIf([string]$state) {
     if (-not (Test-Path $ig)) { return @('', -1) }
-    $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ig -Source (Join-Path $root 'windows') -WhatIf -SysmonState $state | Out-String
-    return @($o, $LASTEXITCODE)
+    # Bos bir veri klasoru: bu PC'de Cortmed kuruluysa gercek "bizim kurdugumuz" isareti sonucu degistirmesin
+    $dd = Join-Path ([IO.Path]::GetTempPath()) ('cm-whatif-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory $dd | Out-Null
+    try { $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ig -Source (Join-Path $root 'windows') -WhatIf -SysmonState $state -DataDir $dd | Out-String; $code = $LASTEXITCODE }
+    finally { Remove-Item $dd -Recurse -Force -ErrorAction SilentlyContinue }
+    return @($o, $code)
 }
 $rAbsent = RunWhatIf 'Absent'
 $rPresent = RunWhatIf 'Present'

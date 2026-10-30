@@ -416,8 +416,16 @@ try {
             if (-not (Test-MicrosoftSigned $sig)) {
                 throw "Sysmon64.exe'nin Microsoft imzası doğrulanamadı; güvenlik için Sysmon kurulmadı."
             }
-            & $s64 -accepteula -i $dataXml | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Sysmon kurulamadı (kod $LASTEXITCODE)." }
+            # Ilk deneme bazen basarisiz oluyor (gercek bir PC'de kod 13, ikinci deneme sorunsuz); bir kez daha dene
+            $smOut = & $s64 -accepteula -i $dataXml 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Start-Sleep -Seconds 5
+                $smOut = & $s64 -accepteula -i $dataXml 2>&1
+            }
+            if ($LASTEXITCODE -ne 0) {
+                $why = (@($smOut | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -Last 1)
+                throw "Sysmon kurulamadı (kod $LASTEXITCODE): $why"
+            }
             Set-Content $markOurs 'cortmed' -Encoding ASCII
             Remove-Item -LiteralPath $markPre -Force -ErrorAction SilentlyContinue
             Write-Host '  [OK] Sysmon kuruldu' -ForegroundColor Green
