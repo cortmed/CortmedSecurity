@@ -658,10 +658,10 @@ function Get-PostureFindings {
             Where-Object { $_.displayName -notmatch 'Defender' })
         if ((-not $mp.AntivirusEnabled -or -not $mp.RealTimeProtectionEnabled) -and $otherAv.Count -eq 0) {
             $out += New-Finding 'defender-off' 'RED' 'Virüs koruması kapalı' `
-                'Windows''un virüs koruması (Defender) kapalı. Başlat menüsünden "Windows Güvenliği"ni açıp Virüs ve tehdit koruması bölümünden açın. Siz kapatmadıysanız bunu bir virüs yapmış olabilir.'
+                'Windows''un virüs koruması (Defender) kapalı. Aşağıdaki ''Virüs korumasını aç'' düğmesine basıp Gerçek zamanlı korumayı açın. Siz kapatmadıysanız bunu bir virüs yapmış olabilir.'
         } elseif ($mp.AntivirusSignatureAge -gt 3) {
             $out += New-Finding 'defender-old' 'YELLOW' 'Virüs koruması güncel değil' `
-                "Windows'un virüs listesi $($mp.AntivirusSignatureAge) gündür güncellenmedi. Ayarlar > Windows Update'ten güncellemeleri yükleyin."
+                "Windows'un virüs listesi $($mp.AntivirusSignatureAge) gündür güncellenmedi. Aşağıdaki 'Güncellemeleri denetle' düğmesine basıp güncellemeleri yükleyin."
         }
     } catch { }
 
@@ -688,7 +688,7 @@ function Get-PostureFindings {
         $lua = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Stop).EnableLUA
         if ($lua -eq 0) {
             $out += New-Finding 'uac' 'YELLOW' 'İzin soran pencere kapalı' `
-                'Normalde bir program bilgisayarda değişiklik yapmak istediğinde Windows size sorar. Bu özellik kapalı. Denetim Masası > Kullanıcı Hesapları > Kullanıcı Hesabı Denetimi ayarlarından açın.'
+                'Normalde bir program bilgisayarda değişiklik yapmak istediğinde Windows size sorar. Bu özellik kapalı. Aşağıdaki ''İzin penceresi ayarını aç'' düğmesine basıp kaydırıcıyı yukarı çekin, sonra Tamam''a basın.'
         }
     } catch { }
 
@@ -697,7 +697,7 @@ function Get-PostureFindings {
         $ss2 = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' -ErrorAction SilentlyContinue
         if (($ss -and $ss.EnableSmartScreen -eq 0) -or ($ss2 -and $ss2.SmartScreenEnabled -eq 'Off')) {
             $out += New-Finding 'smartscreen' 'YELLOW' 'İndirme uyarıları kapalı' `
-                'İnternetten indirilen tanınmayan programlar uyarı vermeden açılıyor. Windows Güvenliği > Uygulama ve tarayıcı denetimi bölümünden açın.'
+                'İnternetten indirilen tanınmayan programlar uyarı vermeden açılıyor. Aşağıdaki ''İndirme uyarılarını aç'' düğmesine basıp açılan sayfada uyarıları açın.'
         }
     } catch { }
 
@@ -705,7 +705,7 @@ function Get-PostureFindings {
         $groups = whoami /groups /fo csv | ConvertFrom-Csv
         if ($groups | Where-Object { $_.SID -eq 'S-1-5-32-544' }) {
             $out += New-Finding 'admin' 'YELLOW' 'Yönetici hesabı kullanılıyor' `
-                'Günlük işler için yönetici olmayan ayrı bir hesap kullanmak, virüslerin bilgisayara yerleşmesini çok zorlaştırır. Ayarlar > Hesaplar > Diğer kullanıcılar.'
+                'Günlük işler için yönetici olmayan ayrı bir hesap kullanmak, virüslerin bilgisayara yerleşmesini çok zorlaştırır. Aşağıdaki ''Hesap ayarlarını aç'' düğmesine basıp ayrı bir hesap ekleyin ve günlük işlerinizde onu kullanın.'
         }
     } catch { }
 
@@ -724,7 +724,7 @@ function Get-PostureFindings {
         $last = Get-HotFix | Where-Object InstalledOn | Sort-Object InstalledOn -Descending | Select-Object -First 1
         if ($last -and ((Get-Date) - $last.InstalledOn).TotalDays -gt 45) {
             $out += New-Finding 'updates' 'YELLOW' 'Windows güncellemeleri gecikmiş' `
-                ("Son güncelleme {0:dd.MM.yyyy} tarihinde yüklenmiş. Güvenlik açıklarının kapanması için Ayarlar > Windows Update'ten güncelleyin." -f $last.InstalledOn)
+                ("Son güncelleme {0:dd.MM.yyyy} tarihinde yüklenmiş. Güvenlik açıklarının kapanması için aşağıdaki 'Windows Update'i aç' düğmesine basıp güncelleyin." -f $last.InstalledOn)
         }
     } catch { }
     return $out
@@ -751,13 +751,14 @@ function Test-StartupEntry([string]$source, [string]$name, [string]$cmd) {
     $out = @()
     if ($cmd -match 'Cortmed') { return $out }
     $exe = Resolve-CommandPath $cmd
+    $startBtn = if ($source -eq 'Zamanlanmış görev') { 'Zamanlanmış görevleri aç' } else { 'Başlangıç uygulamalarını aç' }
     $label = "$name ($source)"
     if ($cmd -match '(?i)(powershell|pwsh).*(-e(nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{20,}|frombase64string)') {
         $out += New-Finding "persist-enc:$name" 'RED' "Gizli başlangıç komutu: $name" `
             'Bilgisayar her açıldığında gizlenmiş bir komut çalışıyor. Virüsler bu yöntemi sık kullanır. Bilgisayardan anlayan birine baktırın.' $exe
     } elseif ($cmd -match '(?i)\b(wscript|cscript|mshta|rundll32|regsvr32|powershell)\b' -and (Test-UserWritable $cmd)) {
         $out += New-Finding "persist-script:$name" 'YELLOW' "Açılışta çalışan komut: $name" `
-            'Bilgisayar her açıldığında bir komut dosyası çalışıyor. Bunu siz kurmadıysanız Görev Yöneticisi > Başlangıç sekmesinden kapatın.' $exe
+            "Bilgisayar her açıldığında bir komut dosyası çalışıyor. Bunu siz kurmadıysanız aşağıdaki '$startBtn' düğmesine basıp kapatın." $exe
     }
     if ($exe -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
         $threat = Test-FileThreat $exe -SkipClam
@@ -769,10 +770,12 @@ function Test-StartupEntry([string]$source, [string]$name, [string]$cmd) {
             $sig = Get-AuthenticodeSignature -FilePath $exe -ErrorAction SilentlyContinue
             if (-not $sig -or $sig.Status -ne 'Valid') {
                 $out += New-Finding "persist-unsigned:$exe" 'YELLOW' "Açılışta çalışan tanınmayan program: $name" `
-                    "Bu program bilgisayar her açıldığında çalışıyor ve üreticisi doğrulanamıyor. Tanımıyorsanız Görev Yöneticisi > Başlangıç sekmesinden kapatın." $exe
+                    "Bu program bilgisayar her açıldığında çalışıyor ve üreticisi doğrulanamıyor. Tanımıyorsanız aşağıdaki '$startBtn' düğmesine basıp kapatın." $exe
             }
         }
     }
+    # Dugme secimi icin dahili isaret (metinden degil, sabit kaynaktan): zamanlanmis gorev mi
+    foreach ($o in $out) { if ([string]$o.key -like 'persist-*') { $o | Add-Member -NotePropertyName source -NotePropertyValue $source -Force } }
     return $out
 }
 
@@ -797,7 +800,7 @@ function Get-PersistenceFindings {
             } else { '"{0}"' -f $f.FullName }
             if ($f.Extension -in @('.vbs', '.js', '.bat', '.cmd', '.ps1', '.hta') -and $f.Name -notmatch 'Cortmed') {
                 $out += New-Finding "startup-script:$($f.Name)" 'YELLOW' "Açılışta çalışan komut dosyası: $($f.Name)" `
-                    'Bilgisayar her açıldığında bir komut dosyası çalışıyor. Bunu siz eklemediyseniz silin ya da bilgisayardan anlayan birine sorun.' $f.FullName
+                    'Bilgisayar her açıldığında bir komut dosyası çalışıyor. Bunu siz eklemediyseniz aşağıdaki ''Başlangıç uygulamalarını aç'' düğmesine basıp kapatın ya da bilgisayardan anlayan birine sorun.' $f.FullName
             }
             $out += Test-StartupEntry 'Başlangıç klasörü' $f.BaseName $cmd
         }
@@ -1734,6 +1737,94 @@ function New-Card([int]$w, [int]$h, $lead, [string]$title, [string]$detail, $but
     return $card
 }
 
+# ------------------------------------------------------------------ "Beni oraya goturun" dugmeleri
+
+# Bulgu anahtarina gore SABIT izinli listeden eylem; adres ya da komut asla bulgu metninden alinmaz.
+# Donus: $null ya da @{ label; kind = 'uri'|'exe'|'select'; target; args (yalniz exe) }
+function Get-FindingAction($f) {
+    if (-not $f) { return $null }
+    $key = [string]$f.key
+    $sys = [Environment]::SystemDirectory
+    switch -Wildcard ($key) {
+        'defender-off'   { return @{ label = 'Virüs korumasını aç'; kind = 'uri'; target = 'windowsdefender://threatsettings' } }
+        'defender-extra' { return @{ label = 'Virüs korumasını aç'; kind = 'uri'; target = 'windowsdefender://threatsettings' } }
+        'defender-old'   { return @{ label = 'Güncellemeleri denetle'; kind = 'uri'; target = 'windowsdefender://threat' } }
+        'firewall'       { return @{ label = 'Güvenlik duvarını aç'; kind = 'uri'; target = 'windowsdefender://network' } }
+        'smartscreen'    { return @{ label = 'İndirme uyarılarını aç'; kind = 'uri'; target = 'windowsdefender://appbrowser' } }
+        'uac'            { return @{ label = 'İzin penceresi ayarını aç'; kind = 'exe'; target = (Join-Path $sys 'UserAccountControlSettings.exe'); args = '' } }
+        'admin'          { return @{ label = 'Hesap ayarlarını aç'; kind = 'uri'; target = 'ms-settings:otherusers' } }
+        'dns'            { return @{ label = 'Ağ ayarlarını aç'; kind = 'uri'; target = 'ms-settings:network-status' } }
+        'updates'        { return @{ label = 'Windows Update''i aç'; kind = 'uri'; target = 'ms-settings:windowsupdate' } }
+        'persist-*' {
+            if ($f.PSObject.Properties['source'] -and [string]$f.source -eq 'Zamanlanmış görev') {
+                return @{ label = 'Zamanlanmış görevleri aç'; kind = 'exe'; target = (Join-Path $sys 'mmc.exe'); args = ('"{0}"' -f (Join-Path $sys 'taskschd.msc')) }
+            }
+            return @{ label = 'Başlangıç uygulamalarını aç'; kind = 'uri'; target = 'ms-settings:startupapps' }
+        }
+        'startup-script:*' { return @{ label = 'Başlangıç uygulamalarını aç'; kind = 'uri'; target = 'ms-settings:startupapps' } }
+    }
+    return (Get-FileSelectAction $f)
+}
+
+# Var olan dosyayi Explorer'da gosterir. Yol tek arguman; tirnak iceren yol reddedilir.
+function Get-FileSelectAction($f) {
+    $p = [string]$f.path
+    if (-not $p -or $p.Contains('"')) { return $null }
+    try { if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null } } catch { return $null }
+    return @{ label = 'Dosyayı klasörde göster'; kind = 'select'; target = $p }
+}
+
+$ActionSchemes = @('windowsdefender:', 'ms-settings:')
+
+# Eylemi baslatir. $Launcher: { param($file, $argText) } (testlerde Start-Process yerine), $Notify: { param($text) }.
+# Basari: $true. Reddedilen ya da acilamayan eylem: sade Turkce mesaj, $false.
+function Invoke-FindingAction($action, [scriptblock]$Launcher = $null, [scriptblock]$Notify = $null) {
+    if (-not $Launcher) { $Launcher = { param($file, $argText) if ($argText) { Start-Process -FilePath $file -ArgumentList $argText } else { Start-Process -FilePath $file } } }
+    if (-not $Notify) { $Notify = { param($text) [Windows.Forms.MessageBox]::Show($text, 'Cortmed Security') | Out-Null } }
+    try {
+        if (-not $action) { throw 'eylem yok' }
+        $sys = [Environment]::SystemDirectory
+        $kind = [string]$action.kind; $target = [string]$action.target
+        switch ($kind) {
+            'uri' {
+                $ok = $false
+                foreach ($s in $ActionSchemes) { if ($target.StartsWith($s, [StringComparison]::OrdinalIgnoreCase)) { $ok = $true } }
+                if (-not $ok -or $target -match '\s') { throw "izinsiz adres: $target" }
+                & $Launcher $target ''
+            }
+            'exe' {
+                $uac = Join-Path $sys 'UserAccountControlSettings.exe'
+                $mmc = Join-Path $sys 'mmc.exe'
+                $tsk = '"{0}"' -f (Join-Path $sys 'taskschd.msc')
+                $a = [string]$action.args
+                if ($target -ieq $uac -and -not $a) { & $Launcher $target '' }
+                elseif ($target -ieq $mmc -and $a -ceq $tsk) { & $Launcher $target $a }
+                else { throw "izinsiz program: $target" }
+            }
+            'select' {
+                if (-not $target -or $target.Contains('"') -or -not (Test-Path -LiteralPath $target -PathType Leaf)) { throw 'izinsiz dosya yolu' }
+                & $Launcher (Join-Path $env:windir 'explorer.exe') ('/select,"{0}"' -f $target)
+            }
+            default { throw "bilinmeyen eylem: $kind" }
+        }
+        return $true
+    } catch {
+        Write-Log "Eylem acilamadi: $($_.Exception.Message)"
+        try { & $Notify 'Açılamadı. Ayrıntılardaki adımları elle izleyebilirsiniz.' } catch { }
+        return $false
+    }
+}
+
+# Eylem dugmesi: tiklayinca Invoke-FindingAction. Eylem yoksa $null.
+function New-ActionButton($finding, [bool]$primary = $true) {
+    $act = Get-FindingAction $finding
+    if (-not $act) { return $null }
+    $b = New-FlatButton $act.label $primary
+    $b.Tag = $act
+    $b.Add_Click({ param($s, $e) [void](Invoke-FindingAction $s.Tag) })
+    return $b
+}
+
 # Davranis bekcisi bulgusunun dosyasi karantinaya alinabilir mi (Ayrintilar penceresiyle ayni kosul)
 function Test-CanQuarantine($finding) {
     return ([string]$finding.key -like 'behavior:*' -and $finding.path -and -not (Test-GuardSystemPath ([string]$finding.path)) -and
@@ -1767,6 +1858,8 @@ function New-FindingCard($finding, [int]$w, $tips, [scriptblock]$onDone) {
         if (Show-Report $s.FindForm() $t.finding) { if ($t.done) { & $t.done $card } }
     })
     $buttons = @()
+    $go = New-ActionButton $finding $false
+    if ($go) { $buttons += $go }
     if (Test-CanQuarantine $finding) {
         $quar = New-FlatButton 'Karantinaya al'
         $quar.Tag = $ctx
@@ -1869,10 +1962,13 @@ function New-ReportForm($finding) {
     $bar.Dock = 'Bottom'; $bar.Height = 62; $bar.Padding = New-Object Windows.Forms.Padding(16, 10, 16, 10); $bar.BackColor = $UiBg
     $result = @{ trusted = $false }
     $f.Tag = $result
-    if ($finding.path -and (Test-Path -LiteralPath $finding.path)) {
-        $open = New-FlatButton 'Dosyanın klasörünü aç'
-        $open.Add_Click({ Start-Process explorer.exe "/select,`"$($finding.path)`"" })
-        [void]$bar.Controls.Add($open)
+    # Bulguya ozel "beni oraya goturun" dugmesi (Kapat'in solunda ana dugme)
+    $go = New-ActionButton $finding $true
+    $act = Get-FindingAction $finding
+    if ($act -and $act.kind -ne 'select') {
+        # Dosyasi da varsa klasorde gosterme secenegi ikinci dugme olarak kalir
+        $sel = New-ActionButton ([pscustomobject]@{ key = 'file:x'; path = [string]$finding.path }) $false
+        if ($sel) { [void]$bar.Controls.Add($sel) }
     }
     # Davranis bekcisi bulgusu (durdurulmayan ya da kapatilan program): dosyayi mevcut karantina islemiyle kaldir
     if (Test-CanQuarantine $finding) {
@@ -1890,7 +1986,8 @@ function New-ReportForm($finding) {
         })
         [void]$bar.Controls.Add($trust)
     }
-    $close = New-FlatButton 'Kapat' $true
+    if ($go) { [void]$bar.Controls.Add($go) }
+    $close = New-FlatButton 'Kapat' (-not $go)
     $close.Add_Click({ $f.Close() })
     [void]$bar.Controls.Add($close)
     $f.Controls.AddRange(@($wrap, $bar, $head))

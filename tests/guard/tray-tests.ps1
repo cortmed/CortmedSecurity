@@ -416,6 +416,95 @@ try {
     TCheck 'tarayici yolu: standart klasorlerden biri ya da bos' ((-not $bp) -or ($bp -match '\\(Google\\Chrome\\Application\\chrome\.exe)$' -and (Test-Path $bp))) "$bp"
     TCheck 'tarayici yolu: Edge' ((-not (Get-BrowserExePath 'Edge')) -or ((Get-BrowserExePath 'Edge') -match 'msedge\.exe$')) ''
     TCheck 'Get-BrowserExePath PATH kullanmaz' ((Get-Command Get-BrowserExePath).Definition -notmatch 'Get-Command|\$env:PATH|\.Path\b') ''
+
+    # "Beni oraya goturun" dugmeleri: sabit izinli liste, hicbir sey gercekten acilmaz
+    $sysDir = [Environment]::SystemDirectory
+    $map = @(
+        @('defender-off', 'Virüs korumasını aç', 'uri', 'windowsdefender://threatsettings'),
+        @('defender-extra', 'Virüs korumasını aç', 'uri', 'windowsdefender://threatsettings'),
+        @('defender-old', 'Güncellemeleri denetle', 'uri', 'windowsdefender://threat'),
+        @('firewall', 'Güvenlik duvarını aç', 'uri', 'windowsdefender://network'),
+        @('smartscreen', 'İndirme uyarılarını aç', 'uri', 'windowsdefender://appbrowser'),
+        @('uac', 'İzin penceresi ayarını aç', 'exe', (Join-Path $sysDir 'UserAccountControlSettings.exe')),
+        @('admin', 'Hesap ayarlarını aç', 'uri', 'ms-settings:otherusers'),
+        @('dns', 'Ağ ayarlarını aç', 'uri', 'ms-settings:network-status'),
+        @('updates', 'Windows Update''i aç', 'uri', 'ms-settings:windowsupdate'),
+        @('persist-script:x', 'Başlangıç uygulamalarını aç', 'uri', 'ms-settings:startupapps'),
+        @('persist-unsigned:C:\x.exe', 'Başlangıç uygulamalarını aç', 'uri', 'ms-settings:startupapps'),
+        @('startup-script:a.vbs', 'Başlangıç uygulamalarını aç', 'uri', 'ms-settings:startupapps')
+    )
+    foreach ($m in $map) {
+        $a = Get-FindingAction (New-Finding $m[0] 'YELLOW' 't' 'd')
+        TCheck "eylem: $($m[0])" ($a -and $a.label -eq $m[1] -and $a.kind -eq $m[2] -and $a.target -eq $m[3]) ($a | Out-String)
+    }
+    $tf = New-Finding 'persist-unsigned:T' 'YELLOW' 't' 'd'
+    $tf | Add-Member -NotePropertyName source -NotePropertyValue 'Zamanlanmış görev'
+    $ta = Get-FindingAction $tf
+    TCheck 'eylem: zamanlanmis gorev mmc ile taskschd.msc' ($ta -and $ta.kind -eq 'exe' -and $ta.target -eq (Join-Path $sysDir 'mmc.exe') -and $ta.args -eq ('"{0}"' -f (Join-Path $sysDir 'taskschd.msc'))) ($ta | Out-String)
+    TCheck 'eylem: bilinmeyen anahtar -> null' ($null -eq (Get-FindingAction (New-Finding 'nope' 'YELLOW' 't' 'd'))) ''
+    TCheck 'eylem: guard onerisi kartlarina dokunulmaz' ($null -eq (Get-FindingAction (New-Finding 'guard-missing' 'YELLOW' 't' 'd'))) ''
+    TCheck 'eylem: bulgu metni adrese donusmez' ($null -eq (Get-FindingAction (New-Finding 'x' 'YELLOW' 'windowsdefender://threat' 'ms-settings:network-status'))) ''
+
+    $victim = Join-Path $work 'sahte.exe'
+    Set-Content -Path $victim -Value 'x'
+    $sa = Get-FindingAction (New-Finding "file:abc" 'RED' 't' 'd' $victim)
+    TCheck 'eylem: dosya bulgusu -> select' ($sa -and $sa.kind -eq 'select' -and $sa.target -eq $victim -and $sa.label -eq 'Dosyayı klasörde göster') ($sa | Out-String)
+    TCheck 'eylem: olmayan dosya -> null' ($null -eq (Get-FindingAction (New-Finding 'file:abc' 'RED' 't' 'd' (Join-Path $work 'yok.exe')))) ''
+    $quoted = Join-Path $work 'a"b.exe'
+    TCheck 'eylem: tirnakli yol -> null' ($null -eq (Get-FindingAction (New-Finding 'file:abc' 'RED' 't' 'd' $quoted))) ''
+
+    # Invoke: sahte baslatici, sahte mesaj; gercek Start-Process yok
+    $launched = New-Object Collections.ArrayList
+    $msgs = New-Object Collections.ArrayList
+    $fake = { param($file, $argText) [void]$launched.Add("$file|$argText") }
+    $note = { param($text) [void]$msgs.Add($text) }
+    foreach ($bad in 'http://evil', 'file:///C:/Windows/System32/cmd.exe', 'javascript:alert(1)', 'ms-settings:x y', 'windowsdefender2://x') {
+        $launched.Clear(); $msgs.Clear()
+        $r = Invoke-FindingAction @{ label = 'x'; kind = 'uri'; target = $bad } $fake $note
+        TCheck "Invoke reddeder: $bad" (-not $r -and $launched.Count -eq 0 -and $msgs.Count -eq 1 -and $msgs[0] -eq 'Açılamadı. Ayrıntılardaki adımları elle izleyebilirsiniz.') "$r $($launched -join ',')"
+    }
+    $launched.Clear(); $msgs.Clear()
+    $r = Invoke-FindingAction @{ label = 'x'; kind = 'exe'; target = 'C:\Windows\System32\cmd.exe'; args = '' } $fake $note
+    TCheck 'Invoke: izinli olmayan exe reddedilir' (-not $r -and $launched.Count -eq 0 -and $msgs.Count -eq 1) ''
+    $r = Invoke-FindingAction @{ label = 'x'; kind = 'exe'; target = (Join-Path $sysDir 'mmc.exe'); args = 'evil.msc' } $fake $note
+    TCheck 'Invoke: mmc baska arguman reddedilir' (-not $r -and $launched.Count -eq 0) ''
+    $launched.Clear(); $msgs.Clear()
+    $r = Invoke-FindingAction (Get-FindingAction (New-Finding 'admin' 'YELLOW' 't' 'd')) $fake $note
+    TCheck 'Invoke: izinli adres baslatilir' ($r -and $launched.Count -eq 1 -and $launched[0] -eq 'ms-settings:otherusers|' -and $msgs.Count -eq 0) ($launched -join ',')
+    $launched.Clear()
+    $r = Invoke-FindingAction (Get-FindingAction (New-Finding 'uac' 'YELLOW' 't' 'd')) $fake $note
+    TCheck 'Invoke: uac exe baslatilir' ($r -and $launched.Count -eq 1 -and $launched[0] -eq ((Join-Path $sysDir 'UserAccountControlSettings.exe') + '|')) ($launched -join ',')
+    $launched.Clear()
+    $r = Invoke-FindingAction $sa $fake $note
+    TCheck 'Invoke: select explorer /select tek arguman' ($r -and $launched.Count -eq 1 -and $launched[0] -eq ((Join-Path $env:windir 'explorer.exe') + '|/select,"' + $victim + '"')) ($launched -join ',')
+    $launched.Clear(); $msgs.Clear()
+    $r = Invoke-FindingAction @{ label = 'x'; kind = 'select'; target = $quoted } $fake $note
+    TCheck 'Invoke: select tirnakli yol reddedilir' (-not $r -and $launched.Count -eq 0) ''
+    $launched.Clear(); $msgs.Clear()
+    $r = Invoke-FindingAction @{ label = 'x'; kind = 'uri'; target = 'ms-settings:network-status' } { param($f, $a) throw 'boom' } $note
+    TCheck 'Invoke: baslatici hata verirse mesaj' (-not $r -and $msgs.Count -eq 1) ''
+
+    # Ayrintilar penceresi: eylem dugmesi Kapat'in solunda; eylemsiz bulguda yok
+    $rf = New-ReportForm (New-Finding 'defender-off' 'RED' 'Virüs koruması kapalı' 'detay')
+    $rb = Btn $rf 'Virüs korumasını aç'
+    $rc = Btn $rf 'Kapat'
+    TCheck 'ayrintilar: eylem dugmesi var' ($null -ne $rb) ''
+    TCheck 'ayrintilar: eylem dugmesi Kapatin solunda' ($rb -and $rc -and $rb.Parent.Controls.IndexOf($rb) -lt $rb.Parent.Controls.IndexOf($rc)) ''
+    TCheck 'ayrintilar: gosterilmedi' (-not $rf.Visible) ''
+    $rf.Dispose()
+    $rf2 = New-ReportForm (New-Finding 'nope' 'YELLOW' 'Baslik' 'detay')
+    TCheck 'ayrintilar: eylemsiz bulguda ek dugme yok' ((@(All-Controls $rf2 | Where-Object { $_ -is [Windows.Forms.Button] }).Count) -eq 1) ''
+    $rf2.Dispose()
+    $rf3 = New-ReportForm (New-Finding 'file:abc' 'RED' 'Tehdit' 'detay' $victim)
+    TCheck 'ayrintilar: dosya icin klasorde goster dugmesi' ($null -ne (Btn $rf3 'Dosyayı klasörde göster')) ''
+    $rf3.Dispose()
+    $cf = New-FindingCard (New-Finding 'firewall' 'YELLOW' 'Güvenlik duvarı kapalı' 'detay') 700 $null $null
+    TCheck 'kart: eylem dugmesi Ayrintilarin yaninda' ($null -ne (Btn $cf 'Güvenlik duvarını aç') -and $null -ne (Btn $cf 'Ayrıntılar')) ''
+    $cf.Dispose()
+
+    # Ayrintilarda gezinme tarifi kalmadi: metinler dugmeye yonlendirir
+    $src = [IO.File]::ReadAllText((Join-Path $RepoRoot 'windows\CortmedSecurity.ps1'), [Text.Encoding]::UTF8)
+    TCheck 'metin: Baslat menusunden / Denetim Masasi tarifi kalmadi' ($src -notmatch 'Başlat menüsünden "Windows|Denetim Masası >|Görev Yöneticisi > Başlangıç') ''
 } catch {
     TCheck 'tepsi testleri calisti' $false $_.Exception.Message
 } finally {
